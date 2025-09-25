@@ -7,6 +7,56 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+# db.py
+import os
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+_engine = None
+
+def get_engine():
+    global _engine
+    if _engine is None:
+        print(f"[db] Creating engine... ({DATABASE_URL[:70]}...)")
+        # pool_pre_ping evita conexiones muertas; timeout para pg8000:
+        _engine = create_engine(
+            DATABASE_URL,
+            pool_pre_ping=True,
+            pool_recycle=300,
+            connect_args={"timeout": 10},  # pg8000 timeout
+        )
+    return _engine
+
+def init_db():
+    eng = get_engine()
+    try:
+        with eng.begin() as conn:
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS lavados(
+              id TEXT PRIMARY KEY,
+              week TEXT,
+              cedis TEXT,
+              supervisor_id TEXT,
+              supervisor_nombre TEXT,
+              unidad_id TEXT,
+              segmento TEXT,
+              ts TIMESTAMP,
+              created_by TEXT
+            )
+            """))
+        print("[db] init_db OK")
+    except SQLAlchemyError as e:
+        print("[db] init_db FAILED:", repr(e))
+        raise
+
+def healthcheck():
+    eng = get_engine()
+    with eng.connect() as conn:
+        conn.execute(text("SELECT 1"))
+        print("[db] healthcheck OK")
+
 # ========= Conexión =========
 # 1) Primero ENV (ideal para Neon):
 DATABASE_URL = os.getenv("psql 'postgresql://neondb_owner:npg_3BMrm8QFDycs@ep-sparkling-water-ad1bjit1-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'", "")
