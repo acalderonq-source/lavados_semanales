@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+store/
+*.csv
+*.xlsx
+.env
+.secrets.toml
