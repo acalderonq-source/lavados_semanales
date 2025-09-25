@@ -1,0 +1,30 @@
+{
+  "registros": {
+    "2025-W39": [
+      {
+        "id": "11c0394a83c343849bdaa45ec8593f62",
+        "week": "2025-W39",
+        "cedis": "cartago",
+        "supervisorId": "sup-miguel-gomez",
+        "supervisorNombre": "Miguel Gomez",
+        "unidadId": "C164420",
+        "unidadLabel": "C164420",
+        "segmento": "hinos",
+        "fotos": {
+          "frente": "store\\evidence\\64e18604c9f34673835d708a04fee3d0_frente.jpg",
+          "atras": "store\\evidence\\a01f88a8c5c943f08303e7dfa3f9b82a_atras.jpg",
+          "lado": "store\\evidence\\1d320519b063497f8db5b3d55ff775b6_lado.png",
+          "cabina": "store\\evidence\\0bee1ec8262540a683085a09bd9dfee4_cabina.png"
+        },
+        "foto_hashes": {
+          "frente": "79a47d5b8d3c909768a2583a4446218613cc9745c8e19ccbb951b7a757116e24",
+          "atras": "49d8efaff4706561c99108b78053e36b5783df595fe6ec6391096842181d8ae4",
+          "lado": "4e58e89ec7360c7ef012de6244cea4c8c07087145e39eacd566cefd7693962b9",
+          "cabina": "7b944ed7b16ea1d25a954ea75c5351c7ee5d169c40267c1b9cc8e96165a18ec7"
+        },
+        "ts": "2025-09-24T15:34:13",
+        "created_by": "Ronny"
+      }
+    ]
+  }
+}
