@@ -1,58 +1,70 @@
-# db.py — capa de datos limpia (SQLAlchemy 2.x)
+# db.py — capa de datos (SQLAlchemy 2.x) limpia
 # ---------------------------------------------
-# - Sin Streamlit ni UI.
-# - Usa DATABASE_URL (SQLAlchemy) del entorno.
-# - Soporta Neon (psycopg2 + sslmode=require) o fallback SQLite local.
+# - Lee DATABASE_URL del entorno (Render/Neon).
+# - Fallback a SQLite local si no hay env var.
 # - Modelos: User, Lavado.
-# - Helpers: init_db, healthcheck, upsert_user, get_user, list_users,
-#            save_lavado, delete_lavado, get_lavados_week, photo_hashes_all.
+# - Funciones: init_db, healthcheck, upsert_user, get_user, list_users,
+#              save_lavado, delete_lavado, get_lavados_week, photo_hashes_all.
 
 from __future__ import annotations
-import os, json, datetime
+
+import os
+import json
+import datetime
+import hashlib
 from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy import (
-    create_engine, text, select, delete,
-    String, DateTime, Text, UniqueConstraint
+    create_engine, text, select, delete, String, DateTime, Text, UniqueConstraint
 )
-from sqlalchemy.orm import (
-    DeclarativeBase, Mapped, mapped_column, sessionmaker
-)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 # =============== Config de conexión ===============
-DATABASE_URL = os.getenv("psql 'postgresql://neondb_owner:npg_3BMrm8QFDycs@ep-sparkling-water-ad1bjit1-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'", "").strip()
+
+# En Render/Neon define una env var llamada EXACTAMENTE: DATABASE_URL
+# Ejemplo Neon (psycopg2): postgresql+psycopg2://USER:PASSWORD@HOST/neondb?sslmode=require
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
 if not DATABASE_URL:
-    # Fallback local (útil para desarrollo sin Neon)
+    # Fallback local (útil en desarrollo)
     os.makedirs("store", exist_ok=True)
     DATABASE_URL = "sqlite:///store/app.db"
 
 _ENGINE = None
 _SessionLocal: Optional[sessionmaker] = None
 
+
 def get_engine():
-    """Crea y reutiliza el engine."""
+    """Crea y reutiliza el engine global."""
     global _ENGINE, _SessionLocal
     if _ENGINE is None:
-        # Nota: en Neon, usa URL estilo:
-        # postgresql+psycopg2://user:pass@ep-...-pooler.../neondb?sslmode=require
         _ENGINE = create_engine(
             DATABASE_URL,
             future=True,
             pool_pre_ping=True,
+            pool_recycle=300,
         )
         _SessionLocal = sessionmaker(bind=_ENGINE, expire_on_commit=False, future=True)
     return _ENGINE
 
+
 def get_session():
-    """Crea una sesión; requiere get_engine() inicializado."""
+    """Devuelve una sesión conectada al engine."""
     if _SessionLocal is None:
         get_engine()
     assert _SessionLocal is not None
     return _SessionLocal()
 
+
+def sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 # =============== Base / Modelos ===============
+
 class Base(DeclarativeBase):
     pass
+
 
 class User(Base):
     __tablename__ = "users"
@@ -62,30 +74,34 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String, nullable=False)  # sha256
     supervisor_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+
 class Lavado(Base):
     __tablename__ = "lavados"
-    id: Mapped[str]                 = mapped_column(String, primary_key=True)
-    week: Mapped[str]               = mapped_column(String, index=True)
-    cedis: Mapped[str]              = mapped_column(String, index=True)
-    supervisor_id: Mapped[Optional[str]]     = mapped_column(String, index=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    week: Mapped[str] = mapped_column(String, index=True)
+    cedis: Mapped[str] = mapped_column(String, index=True)
+    supervisor_id: Mapped[Optional[str]] = mapped_column(String, index=True)
     supervisor_nombre: Mapped[Optional[str]] = mapped_column(String)
-    unidad_id: Mapped[str]          = mapped_column(String, index=True)
+    unidad_id: Mapped[str] = mapped_column(String, index=True)
     unidad_label: Mapped[Optional[str]] = mapped_column(String)
     segmento: Mapped[Optional[str]] = mapped_column(String, index=True)
-    ts: Mapped[datetime.datetime]   = mapped_column(DateTime, index=True)
+    ts: Mapped[datetime.datetime] = mapped_column(DateTime, index=True)
     created_by: Mapped[Optional[str]] = mapped_column(String)
-    fotos_json: Mapped[Optional[str]] = mapped_column(Text)      # {"frente":path,...}
-    foto_hashes_json: Mapped[Optional[str]] = mapped_column(Text) # {"frente":hash,...}
+    fotos_json: Mapped[Optional[str]] = mapped_column(Text)       # {"frente": "...", ...}
+    foto_hashes_json: Mapped[Optional[str]] = mapped_column(Text) # {"frente": "sha256", ...}
 
     __table_args__ = (
         UniqueConstraint("week", "cedis", "unidad_id", name="uq_week_cedis_unidad"),
     )
 
+
 # =============== Setup ===============
+
 def init_db() -> None:
     """Crea tablas si no existen."""
     eng = get_engine()
     Base.metadata.create_all(eng)
+
 
 def healthcheck() -> None:
     """Verifica conectividad básica."""
@@ -93,16 +109,14 @@ def healthcheck() -> None:
     with eng.connect() as conn:
         conn.execute(text("SELECT 1"))
 
+
 # =============== USERS (para login en SQL) ===============
+
 def upsert_user(u: Dict[str, Any]) -> None:
     """
     Crea/actualiza usuario.
-    Campos esperados:
-      - username (str, obligatorio)
-      - name (str)
-      - role (str)  'admin'|'supervisor'
-      - sha256 (str) o password_hash (str)
-      - supervisor_id (str|None)
+    Campos: username (obligatorio), name, role ('admin'|'supervisor'),
+            sha256 (o password_hash), supervisor_id (opcional).
     """
     with get_session() as s:
         row = s.get(User, u["username"])
@@ -114,6 +128,7 @@ def upsert_user(u: Dict[str, Any]) -> None:
         row.password_hash = u.get("sha256") or u.get("password_hash") or ""
         row.supervisor_id = u.get("supervisor_id")
         s.commit()
+
 
 def get_user(username: str) -> Optional[Dict[str, Any]]:
     with get_session() as s:
@@ -128,33 +143,39 @@ def get_user(username: str) -> Optional[Dict[str, Any]]:
             "supervisor_id": row.supervisor_id,
         }
 
+
 def list_users() -> List[Dict[str, Any]]:
     with get_session() as s:
         rows = s.execute(select(User)).scalars().all()
-        return [{
-            "username": r.username,
-            "name": r.name,
-            "role": r.role,
-            "supervisor_id": r.supervisor_id
-        } for r in rows]
+        return [
+            {
+                "username": r.username,
+                "name": r.name,
+                "role": r.role,
+                "supervisor_id": r.supervisor_id,
+            }
+            for r in rows
+        ]
+
 
 # =============== LAVADOS ===============
+
 def _parse_ts(ts_val: Any) -> datetime.datetime:
     if isinstance(ts_val, datetime.datetime):
         return ts_val
     if isinstance(ts_val, str) and ts_val:
-        # quita zona si viene con +00:00
         try:
             return datetime.datetime.fromisoformat(ts_val.replace("Z", "").split("+")[0])
         except Exception:
             pass
     return datetime.datetime.utcnow()
 
+
 def save_lavado(record: Dict[str, Any]) -> None:
     """
-    UPSERT por (week, cedis, unidad_id): borra el existente para esa combinación y crea uno nuevo.
-    record debe traer:
-      id, week, cedis, supervisorId, supervisorNombre, unidadId, unidadLabel?, segmento, ts?, created_by?, fotos?, foto_hashes?
+    UPSERT por (week, cedis, unidad_id): elimina el existente y crea uno nuevo.
+    record: id, week, cedis, supervisorId, supervisorNombre, unidadId, unidadLabel?,
+            segmento, ts?, created_by?, fotos?, foto_hashes?
     """
     with get_session() as s:
         s.execute(delete(Lavado).where(
@@ -179,10 +200,12 @@ def save_lavado(record: Dict[str, Any]) -> None:
         s.add(row)
         s.commit()
 
+
 def delete_lavado(lavado_id: str) -> None:
     with get_session() as s:
         s.execute(delete(Lavado).where(Lavado.id == lavado_id))
         s.commit()
+
 
 def get_lavados_week(week: str) -> List[Dict[str, Any]]:
     with get_session() as s:
@@ -206,6 +229,7 @@ def get_lavados_week(week: str) -> List[Dict[str, Any]]:
                 "created_by": r.created_by,
             })
         return out
+
 
 def photo_hashes_all() -> Set[str]:
     with get_session() as s:

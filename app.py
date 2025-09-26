@@ -1,769 +1,245 @@
-# app.py — Lavados Semanales (Streamlit)
-# --------------------------------------
-# - Login con roles (admin / supervisor)
-# - Supervisores capturan lavados con 4 fotos obligatorias (frente, atrás, lado, cabina)
-# - Bloqueo de fotos repetidas por hash SHA-256 (local/global)
-# - Catálogos desde ./data/*.json (ver formatos abajo)
-# - Export CSV/XLSX y export a carpetas por semana
-# - Admin NO puede capturar ni borrar; solo ver, exportar y gestionar usuarios
-# - Código protegido con boot-guard para mostrar errores en pantalla (evita "pantalla negra")
-#
-# Requisitos en requirements.txt (versiones estables en Render/Cloud):
-# streamlit==1.38.0
-# pandas==2.2.2
-# xlsxwriter==3.2.9
-# psycopg2-binary==2.9.10
-# SQLAlchemy==2.0.43
+# db.py — capa de datos (SQLAlchemy 2.x) limpia
+# ---------------------------------------------
+# - Lee DATABASE_URL del entorno (Render/Neon).
+# - Fallback a SQLite local si no hay env var.
+# - Modelos: User, Lavado.
+# - Funciones: init_db, healthcheck, upsert_user, get_user, list_users,
+#              save_lavado, delete_lavado, get_lavados_week, photo_hashes_all.
 
 from __future__ import annotations
-import os, io, csv, json, uuid, hashlib, shutil, traceback
-from datetime import datetime, date
-from typing import Any, Dict, List, Optional, Tuple
 
-import pandas as pd
-import streamlit as st
+import os
+import json
+import datetime
+import hashlib
+from typing import Any, Dict, List, Optional, Set
 
-# === Branding ===
-LOGO_URL = "https://tse1.mm.bing.net/th/id/OIP.QBCt9-dF3e4xLmEw_WVPmQHaCW?rs=1&pid=ImgDetMain&o=7&rm=3"
+from sqlalchemy import (
+    create_engine, text, select, delete, String, DateTime, Text, UniqueConstraint
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-def _cache_logo_locally() -> str | None:
-    """Descarga el logo 1 vez a data/_logo.png para usarlo como page_icon."""
-    try:
-        os.makedirs("data", exist_ok=True)
-        local = "data/_logo.png"
-        if not os.path.exists(local):
-            import requests
-            r = requests.get(LOGO_URL, timeout=10)
-            if r.ok:
-                with open(local, "wb") as f:
-                    f.write(r.content)
-        return local if os.path.exists(local) else None
-    except Exception:
-        return None
+# =============== Config de conexión ===============
 
-def inject_css():
-    st.markdown("""
-    <style>
-      /* Layout base */
-      .main { padding-top: 0.25rem; }
-      div.block-container { max-width: 1200px; }
+# En Render/Neon define una env var llamada EXACTAMENTE: DATABASE_URL
+# Ejemplo Neon (psycopg2): postgresql+psycopg2://USER:PASSWORD@HOST/neondb?sslmode=require
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-      /* Header */
-      .app-header {
-        display:flex; align-items:center; gap:14px;
-        background:#fff; border:1px solid #eaeaea;
-        border-radius:16px; padding:12px 16px; 
-        box-shadow:0 8px 20px rgba(0,0,0,.04);
-        margin-bottom:12px;
-      }
-      .app-header .logo { height:48px; border-radius:8px; }
-      .app-header .title { font-weight:700; font-size:20px; letter-spacing:.2px; color:#0f172a; }
-      .app-header .subtitle { font-size:12px; color:#64748b; margin-top:-2px; }
-
-      /* Botones */
-      .stButton > button {
-        border-radius:12px; padding:10px 16px; font-weight:600;
-        border:1px solid #0ea5e9; background:#0ea5e9; color:#fff;
-        box-shadow:0 2px 0 rgba(14,165,233,.15);
-      }
-      .stButton > button:hover { filter: brightness(.97); }
-
-      /* Pills segmento */
-      div[role="radiogroup"] label {
-        border:1px solid #e5e7eb; border-radius:999px; padding:8px 14px; margin-right:8px;
-      }
-
-      /* Tablas */
-      .stDataFrame tbody tr:nth-child(odd){ background:#fafafa; }
-      .stDataFrame thead tr th { background:#f6f8fa !important; }
-
-      /* Uploader */
-      .stFileUploader { border-radius:12px; }
-
-      /* Ocultar menús de Streamlit para look corporativo */
-      #MainMenu, footer {visibility:hidden;}
-    </style>
-    """, unsafe_allow_html=True)
-
-
-# ============== BOOT GUARD (muestra errores en pantalla) ==============
-def boot_guard(fn):
-    try:
-        fn()
-    except Exception as e:
-        st.set_page_config(page_title="Error al iniciar", layout="wide")
-        st.title("❌ La app falló al iniciar")
-        st.error("Revisa el detalle del error y los logs del servidor.")
-        st.exception(e)
-        st.code("".join(traceback.format_exc()))
-        st.stop()
-
-# ========================= UTILIDADES BÁSICAS =========================
-def norm(s: Any) -> str:
-    """Minúsculas + sin acentos + trim."""
-    import unicodedata
-    return unicodedata.normalize("NFD", str(s or ""))\
-        .encode("ascii", "ignore").decode("ascii")\
-        .lower().strip()
-
-def iso_week_key(d: Optional[date] = None) -> str:
-    d = d or date.today()
-    y, w, _ = d.isocalendar()
-    return f"{y}-W{w:02d}"
-
-def ensure_dirs():
-    os.makedirs("data", exist_ok=True)
+if not DATABASE_URL:
+    # Fallback local (útil en desarrollo)
     os.makedirs("store", exist_ok=True)
-    os.makedirs("store/evidence", exist_ok=True)
-    os.makedirs("store/semanas", exist_ok=True)
-
-def load_json(path: str) -> Any:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-def save_json(path: str, data: Any):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def sha256_bytes(b: bytes) -> str:
-    return hashlib.sha256(b).hexdigest()
-
-def csv_bytes(rows: List[List[Any]]) -> bytes:
-    buff = io.StringIO()
-    writer = csv.writer(buff, quoting=csv.QUOTE_ALL)
-    for r in rows:
-        writer.writerow([("" if x is None else str(x)) for x in r])
-    return buff.getvalue().encode("utf-8")
-
-def xlsx_week_bytes(week: str, lav: List[Dict[str, Any]], nolav: List[Dict[str, Any]]) -> bytes:
-    bio = io.BytesIO()
-    df_lav = pd.DataFrame([{
-        "week": week,
-        "cedis": r["cedis"],
-        "supervisor": r.get("supervisorNombre", ""),
-        "segmento": r.get("segmento", ""),
-        "unidadId": r.get("unidadId") or r.get("unidadLabel", ""),
-        "timestamp": r.get("ts", ""),
-        "created_by": r.get("created_by", "")
-    } for r in lav])
-    df_nolav = pd.DataFrame([{
-        "week": week, "cedis": u["cedis"], "segmento": u["segmento"], "unidadId": u["id"]
-    } for u in nolav])
-
-    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
-        (df_lav if not df_lav.empty else pd.DataFrame(
-            columns=["week","cedis","supervisor","segmento","unidadId","timestamp","created_by"]
-        )).to_excel(writer, sheet_name="Lavadas", index=False)
-
-        (df_nolav if not df_nolav.empty else pd.DataFrame(
-            columns=["week","cedis","segmento","unidadId"]
-        )).to_excel(writer, sheet_name="No_lavadas", index=False)
-
-    bio.seek(0)
-    return bio.getvalue()
-
-# ============================ CONFIG FIJA =============================
-CONFIG: Dict[str, Any] = {
-    "segmentos": [
-        {"id": "hinos", "nombre": "Hinos"},
-        {"id": "graneles", "nombre": "Graneles"},
-        {"id": "otros", "nombre": "Otros"},
-    ],
-    "cedis": [
-        {"id": "cartago", "nombre": "Cartago"},
-        {"id": "alajuela", "nombre": "Alajuela"},
-        {"id": "guapiles", "nombre": "Guápiles"},
-        {"id": "Transportadora", "nombre": "Transportadora"},
-        {"id": "San Carlos", "nombre": "San Carlos"},
-        {"id": "Rio Claro", "nombre": "Rio Claro"},
-        {"id": "Perez Zeledon", "nombre": "Perez Zeledon"},
-        {"id": "Nicoya", "nombre": "Nicoya"},
-        {"id": "La Cruz", "nombre": "La Cruz"},
-    ],
-    "supervisores": [
-        #TRANSPORTADORA
-        {"id": "sup-ronny-garita", "nombre": "Ronny Garita", "cedis": "Transportadora"},
-        # CARTAGO
-        {"id": "sup-miguel-gomez",   "nombre": "Miguel Gomez",   "cedis": "cartago",  "segmento": "hinos"},
-        {"id": "sup-erick-valerin",  "nombre": "Erick Valerin",  "cedis": "cartago",  "segmento": "graneles"},
-        # GUÁPILES
-        {"id": "sup-enrique-herrera","nombre": "Enrique Herrera","cedis": "guapiles"},
-        {"id": "sup-raul-retana",    "nombre": "Raul Retana",    "cedis": "guapiles", "segmento": "hinos"},
-        # PÉREZ ZELEDÓN
-        {"id": "sup-adrian-veita",   "nombre": "Adrian Veita",   "cedis": "Perez Zeledon"},
-        {"id": "sup-luis-solis",     "nombre": "Luis Solis",     "cedis": "Perez Zeledon"},
-        # LA CRUZ
-        {"id": "sup-daniel-salas",   "nombre": "Daniel Salas",   "cedis": "La Cruz"},
-        {"id": "sup-roberto-chirino","nombre": "Roberto Chirino","cedis": "La Cruz"},
-        # ALAJUELA
-        {"id": "sup-cristian-bolanos","nombre":"Cristian Bolaños","cedis":"alajuela","segmento":"graneles"},
-        {"id": "sup-roberto-vargas",  "nombre":"Roberto Vargas",  "cedis":"alajuela","segmento":"hinos"},
-        # SAN CARLOS
-        {"id": "sup-cristofer-carranza","nombre":"Cristofer Carranza","cedis":"San Carlos"},
-        # RÍO CLARO
-        {"id": "sup-victor-cordero", "nombre": "Victor Cordero", "cedis": "Rio Claro"},
-        # NICOYA
-        {"id": "sup-luis-rivas",     "nombre": "Luis Rivas",     "cedis": "Nicoya"},
-    ],
-    "asignaciones": [
-        # ejemplo: {"supervisorId": "sup-miguel-gomez", "unidadId": "C170135"},
-    ]
-}
-
-def cedis_id_from_any(val: str) -> str:
-    key = norm(val)
-    for c in CONFIG["cedis"]:
-        if norm(c["id"]) == key or norm(c["nombre"]) == key:
-            return c["id"]
-    return key
-
-def segment_from_negocio(neg: str) -> Tuple[str, str]:
-    n = norm(neg)
-    if "granel" in n: return "graneles", "Granel"
-    if "cilindro" in n or "hino" in n: return "hinos", "Hino"
-    return "otros", "Otro"
-
-# ========================= CARGA DE CATÁLOGOS ========================
-SOURCES: List[str] = [
-    "data/unidades-hinos-cartago.json",
-    "data/unidades-la-cruz.json",
-    "data/unidades-alajuela.json",
-    "data/unidades-todo.json",
-    "data/unidades-transportadora.json",  # opcional
-]
-
-def load_catalog() -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    for path in SOURCES:
-        arr = load_json(path)
-        if not isinstance(arr, list):
-            continue
-        for u in arr:
-            id_ = str(u.get("id") or u.get("placa") or "").strip()
-            if not id_: continue
-            cedis = cedis_id_from_any(u.get("cedis", ""))
-            if not cedis: continue
-            segmento = u.get("segmento"); tipo = u.get("tipo")
-            if not segmento:
-                segmento, tipo = segment_from_negocio(u.get("negocio", ""))
-            if not tipo:
-                tipo = "Hino" if segmento == "hinos" else "Granel" if segmento == "graneles" else "Otro"
-            items.append({"id": id_, "cedis": cedis, "segmento": segmento, "tipo": tipo})
-    # dedupe por (id, cedis)
-    dedup: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    for u in items:
-        dedup[(u["id"], u["cedis"])] = u
-    return list(dedup.values())
-
-# ============================= USUARIOS ==============================
-USERS_PATH = "data/users.json"
-
-def load_users() -> Dict[str, Any]:
-    data = load_json(USERS_PATH)
-    if not isinstance(data, dict):
-        data = {"users": []}
-    data.setdefault("users", [])
-    # Si no hay admin, crear uno por defecto
-    if not any(norm(u.get("username")) == "admin" for u in data["users"]):
-        data["users"].append({"username": "admin", "name": "Administrador", "role": "admin", "password": "admin123"})
-        save_users(data)
-    return data
-
-def save_users(data: Dict[str, Any]):
-    save_json(USERS_PATH, data)
-
-def verify_password(user: Dict[str, Any], plain: str) -> bool:
-    if "sha256" in user:
-        return sha256_bytes(plain.encode("utf-8")) == user["sha256"]
-    if "password" in user:
-        return user["password"] == plain
-    return False
-
-def require_login() -> Dict[str, Any]:
-    if "auth" in st.session_state and st.session_state["auth"].get("ok"):
-        return st.session_state["auth"]
-
-    users = load_users().get("users", [])
-    st.title("Lavado semanal de unidades")
-    st.subheader("Iniciar sesión")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        username = st.text_input("Usuario")
-    with c2:
-        password = st.text_input("Contraseña", type="password")
-
-    if st.button("Entrar"):
-        u = next((u for u in users if norm(u.get("username")) == norm(username)), None)
-        if not u or not verify_password(u, password):
-            st.error("Usuario o contraseña incorrectos.")
-            st.stop()
-        st.session_state["auth"] = {
-            "ok": True,
-            "username": u["username"],
-            "name": u.get("name") or u.get("nombre") or u["username"],
-            "role": u.get("role", "supervisor"),
-            "supervisorId": u.get("supervisor_id"),
-        }
-        st.rerun()
-    st.stop()
-
-def admin_user_manager(cedis_labels: Dict[str, str]):
-    st.header("Gestión de usuarios")
-    data = load_users()
-    users = data.get("users", [])
-
-    sup_opts = {s["id"]: f'{s["nombre"]} · {cedis_labels.get(s["cedis"], s["cedis"])}'
-                for s in CONFIG["supervisores"]}
-
-    if users:
-        st.subheader("Usuarios actuales")
-        st.dataframe({
-            "Usuario": [u.get("username","") for u in users],
-            "Nombre": [u.get("name") or u.get("nombre","") for u in users],
-            "Rol":    [u.get("role","") for u in users],
-            "Supervisor ID": [u.get("supervisor_id","") for u in users],
-        }, width="stretch")
-    else:
-        st.info("No hay usuarios.")
-
-    st.markdown("---")
-    st.subheader("Crear nuevo usuario")
-    with st.form("crear_usuario", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            username = st.text_input("Usuario (sin espacios)").strip()
-            name = st.text_input("Nombre completo").strip()
-        with col2:
-            role = st.selectbox("Rol", ["supervisor", "admin"])
-            password = st.text_input("Contraseña", type="password")
-
-        sup_id = ""
-        if role == "supervisor":
-            sup_id = st.selectbox(
-                "Supervisor asignado (obligatorio para rol supervisor)",
-                options=[""] + list(sup_opts.keys()),
-                format_func=lambda x: sup_opts.get(x, "— Elegir —")
-            )
-        btn = st.form_submit_button("Crear usuario")
-
-        if btn:
-            if not username:
-                st.error("Usuario obligatorio."); st.stop()
-            if any(norm(u.get("username","")) == norm(username) for u in users):
-                st.error("Ese usuario ya existe."); st.stop()
-            if not password or len(password) < 4:
-                st.error("La contraseña debe tener al menos 4 caracteres."); st.stop()
-            if role == "supervisor" and not sup_id:
-                st.error("Elegí un supervisor para el usuario supervisor."); st.stop()
-
-            new_user = {
-                "username": username,
-                "name": name or username,
-                "role": role,
-                "sha256": sha256_bytes(password.encode("utf-8")),
-            }
-            if role == "supervisor":
-                new_user["supervisor_id"] = sup_id
-            users.append(new_user)
-            save_users({"users": users})
-            st.success(f"Usuario '{username}' creado.")
-            st.rerun()
-
-# ========================== STORE (JSON LOCAL) ========================
-STORE_PATH = "store/store.json"
-
-def load_store() -> Dict[str, Any]:
-    data = load_json(STORE_PATH)
-    if not isinstance(data, dict):
-        data = {"registros": {}}
-    data.setdefault("registros", {})
-    return data
-
-def save_store(data: Dict[str, Any]):
-    save_json(STORE_PATH, data)
-
-def collect_all_photo_hashes(store: Dict[str, Any]) -> set:
-    hashes = set()
-    for lst in store.get("registros", {}).values():
-        for r in lst:
-            for h in (r.get("foto_hashes") or {}).values():
-                if h: hashes.add(h)
-    return hashes
-
-def safe_slug(s: str) -> str:
-    return norm(s).replace(" ", "-").replace("/", "-")
-
-def save_photo(file, subname: str, week: str, cedis: str, unidad_id: str) -> Optional[str]:
-    if not file: return None
-    ext = os.path.splitext(file.name or "")[1].lower() or ".jpg"
-    base = os.path.join("store", "evidence", week, safe_slug(cedis), safe_slug(str(unidad_id)))
-    os.makedirs(base, exist_ok=True)
-    name = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}_{subname}{ext}"
-    path = os.path.join(base, name)
-    with open(path, "wb") as f:
-        f.write(file.getbuffer())
-    return path
-
-def delete_week(week: str, store: Dict[str, Any]):
-    # borra registros + carpeta evidencia + carpeta semanas
-    store["registros"].pop(week, None)
-    save_store(store)
-    try:
-        shutil.rmtree(os.path.join("store", "evidence", week), ignore_errors=True)
-        shutil.rmtree(os.path.join("store", "semanas", week), ignore_errors=True)
-    except Exception:
-        pass
-
-def export_week_folders(week: str, catalog: List[Dict[str, Any]], store: Dict[str, Any], only_cedis: Optional[str] = None):
-    base = os.path.join("store", "semanas", week)
-    lav_dir = os.path.join(base, "lavados")
-    nolav_dir = os.path.join(base, "no_lavados")
-    os.makedirs(lav_dir, exist_ok=True); os.makedirs(nolav_dir, exist_ok=True)
-
-    registros = store.get("registros", {}).get(week, [])[:]
-    if only_cedis:
-        registros = [r for r in registros if r["cedis"] == only_cedis]
-        cat = [u for u in catalog if u["cedis"] == only_cedis]
-    else:
-        cat = catalog[:]
-
-    lavadas_set = {(r["cedis"], r["unidadId"]) for r in registros}
-    for r in registros:
-        cedis = r["cedis"]; unidad = r["unidadId"]
-        src_dir = os.path.join("store","evidence",week,safe_slug(cedis),safe_slug(unidad))
-        dst_dir = os.path.join(lav_dir, cedis, unidad)
-        os.makedirs(dst_dir, exist_ok=True)
-        if os.path.isdir(src_dir):
-            for name in os.listdir(src_dir):
-                src = os.path.join(src_dir, name)
-                if os.path.isfile(src):
-                    shutil.copy2(src, os.path.join(dst_dir, name))
-        save_json(os.path.join(dst_dir, "record.json"), r)
-
-    for u in cat:
-        if (u["cedis"], u["id"]) in lavadas_set: continue
-        dst = os.path.join(nolav_dir, u["cedis"], u["id"])
-        os.makedirs(dst, exist_ok=True)
-        with open(os.path.join(dst,"README.txt"), "w", encoding="utf-8") as f:
-            f.write(f"Unidad NO lavada en {week}\nCEDIS: {u['cedis']}\nSegmento: {u['segmento']}\nGenerado: {datetime.now().isoformat(timespec='seconds')}\n")
-
-    rows = [["week","estado","cedis","segmento","unidadId","supervisor","timestamp"]]
-    for r in registros:
-        rows.append([week,"lavado",r["cedis"],r["segmento"],r["unidadId"],r.get("supervisorNombre",""),r["ts"]])
-    for u in cat:
-        if (u["cedis"], u["id"]) not in lavadas_set:
-            rows.append([week,"no_lavado",u["cedis"],u["segmento"],u["id"],"",""])
-    with open(os.path.join(base,"resumen.csv"),"wb") as f:
-        f.write(csv_bytes(rows))
-
-# ================================ APP ================================
-def main():
-    st.set_page_config(page_title="Lavado semanal", layout="wide")
-    ensure_dirs()
-
-    auth = require_login()     # obliga login
-    CATALOGO = load_catalog()
-    STORE = load_store()
-    ALL_HASHES = collect_all_photo_hashes(STORE)
-
-    cedis_labels = {c["id"]: c["nombre"] for c in CONFIG["cedis"]}
-    sup_by_id = {s["id"]: s for s in CONFIG["supervisores"]}
-
-    # Header + logout
-    colH1, colH2 = st.columns([6,1])
-    with colH1:
-        st.title("Lavado semanal de unidades")
-        st.caption(f"Usuario: **{auth['name']}** · Rol: **{auth['role']}**")
-    with colH2:
-        if st.button("Cerrar sesión"):
-            st.session_state.pop("auth", None); st.rerun()
-
-    # Filtros superiores
-    cont = st.container()
-    with cont:
-        cA, cB, cC, cD = st.columns([1.1, 1.5, 1.6, 1.8])
-        with cA:
-            fecha_sel = st.date_input("Semana (elige cualquier día)", value=date.today())
-            WEEK = iso_week_key(fecha_sel)
-
-        # Rol: supervisor => cedis/sup fijos
-        if auth["role"] == "supervisor":
-            sup = sup_by_id.get(auth.get("supervisorId") or "", {})
-            CEDIS = sup.get("cedis", "")
-            SUP = sup.get("id", "")
-            SUP_LABEL = sup.get("nombre", SUP)
-            st.write(f"**CEDIS:** {cedis_labels.get(CEDIS, CEDIS)} · **Supervisor:** {SUP_LABEL}")
-        else:
-            with cB:
-                cedis_options = [c["id"] for c in CONFIG["cedis"]]
-                CEDIS = st.selectbox("Departamento (CEDIS)", options=cedis_options, index=0,
-                                     format_func=lambda x: cedis_labels.get(x, x))
-            with cC:
-                sup_list = [s for s in CONFIG["supervisores"] if norm(s["cedis"]) == norm(CEDIS)]
-                sup_map = {s["id"]: s for s in sup_list}
-                SUP = st.selectbox(
-                    "Supervisor (para estadísticas)",
-                    options=[""] + [s["id"] for s in sup_list],
-                    format_func=lambda x: (sup_map.get(x, {}) or {}).get("nombre", "— Elegir supervisor —"),
-                )
-
-        with cD:
-            seg_ids = ["all"] + [s["id"] for s in CONFIG["segmentos"]]
-            seg_labels = {"all":"Todos", **{s["id"]: s["nombre"] for s in CONFIG["segmentos"]}}
-            SEG = st.radio("Segmento", options=seg_ids, format_func=lambda x: seg_labels[x], horizontal=True)
-
-    sup_seg = (sup_by_id.get(SUP) or {}).get("segmento")
-
-    def unidades_visibles() -> List[Dict[str, Any]]:
-        if not SUP and auth["role"] == "supervisor":
-            return []
-        asignadas_ids = {a["unidadId"] for a in CONFIG["asignaciones"] if a["supervisorId"] == SUP}
-        if asignadas_ids:
-            pool = [u for u in CATALOGO if u["cedis"] == CEDIS and u["id"] in asignadas_ids]
-        else:
-            pool = [u for u in CATALOGO if u["cedis"] == CEDIS]
-            if sup_seg:  # supervisor con segmento fijo
-                pool = [u for u in pool if u["segmento"] == sup_seg]
-        if SEG != "all":
-            pool = [u for u in pool if u["segmento"] == SEG]
-        return pool
-
-    pool_cap = unidades_visibles()
-
-    # -------- Formulario de captura (solo supervisor) --------
-    st.subheader("Registrar lavado")
-    FOTO_SLOTS = [("frente","Frente"),("atras","Atrás"),("lado","Medio lado"),("cabina","Cabina")]
-
-    if auth["role"] != "supervisor":
-        st.info("El administrador no puede registrar ni modificar lavados. Solo consulta y exporta estadísticas.", icon="🔒")
-    else:
-        with st.form("form_registro", clear_on_submit=False):
-            unidad_ids = [u["id"] for u in pool_cap]
-            unidad = st.selectbox("Unidad", options=[""] + unidad_ids, index=0)
-
-            cols = st.columns(4)
-            uploads: Dict[str, Any] = {}
-            for (key, label), c in zip(FOTO_SLOTS, cols):
-                with c:
-                    uploads[key] = st.file_uploader(
-                        f"Foto: {label}", type=["jpg","jpeg","png","webp"], key=f"u_{key}"
-                    )
-
-            submitted = st.form_submit_button("Guardar")
-            if submitted:
-                if not unidad:
-                    st.warning("Elegí la unidad.", icon="⚠️")
-                elif any(uploads[k] is None for k, _ in FOTO_SLOTS):
-                    st.warning("Subí las 4 fotos: Frente, Atrás, Medio lado y Cabina.", icon="⚠️")
-                else:
-                    # Duplicidad local (en el mismo form)
-                    hashes_local: Dict[str, str] = {}
-                    dup_local = False
-                    for k,_ in FOTO_SLOTS:
-                        h = sha256_bytes(uploads[k].getbuffer())
-                        if h in hashes_local.values(): dup_local = True
-                        hashes_local[k] = h
-                    if dup_local:
-                        st.error("No podés subir la misma foto en dos posiciones distintas.", icon="🚫"); st.stop()
-
-                    # Duplicidad global
-                    ALL_HASHES = collect_all_photo_hashes(STORE)
-                    repetidas = [k for k,h in hashes_local.items() if h in ALL_HASHES]
-                    if repetidas:
-                        st.error(f"Estas fotos ya se usaron antes: {', '.join(repetidas)}.", icon="🚫"); st.stop()
-
-                    # Guardar fotos
-                    fotos_paths = {k: save_photo(uploads[k], k, WEEK, CEDIS, unidad) for k,_ in FOTO_SLOTS}
-
-                    u = next((x for x in CATALOGO if x["id"] == unidad and x["cedis"] == CEDIS), None)
-                    record = {
-                        "id": uuid.uuid4().hex,
-                        "week": WEEK,
-                        "cedis": CEDIS,
-                        "supervisorId": SUP,
-                        "supervisorNombre": (sup_by_id.get(SUP) or {}).get("nombre",""),
-                        "unidadId": unidad, "unidadLabel": unidad,
-                        "segmento": (u or {}).get("segmento",""),
-                        "fotos": fotos_paths, "foto_hashes": hashes_local,
-                        "ts": datetime.now().isoformat(timespec="seconds"),
-                        "created_by": auth["username"],
-                    }
-                    STORE.setdefault("registros", {})
-                    lst = STORE["registros"].setdefault(WEEK, [])
-                    lst = [r for r in lst if not (r["unidadId"] == unidad and r["cedis"] == CEDIS)]
-                    lst.append(record)
-                    STORE["registros"][WEEK] = lst
-                    save_store(STORE)
-                    st.success("¡Guardado!")
-
-    # -------- Tabla de registros de la semana --------
-    st.subheader(f"Registros — {iso_week_key(fecha_sel)}")
-    reg_semana = STORE.get("registros", {}).get(iso_week_key(fecha_sel), [])
-    if auth["role"] == "supervisor":
-        reg_semana = [r for r in reg_semana if r["supervisorId"] == auth.get("supervisorId")]
-
-    if not reg_semana:
-        st.write("Sin registros para esta semana.")
-    else:
-        for r in sorted(reg_semana, key=lambda x: x["ts"], reverse=True):
-            cols = st.columns([1,1,0.8,1,2.2,0.9,0.6])
-            cols[0].write(cedis_labels.get(r["cedis"], r["cedis"]))
-            cols[1].write(r.get("supervisorNombre",""))
-            cols[2].write(r.get("segmento",""))
-            cols[3].write(r.get("unidadLabel",""))
-            gcols = cols[4].columns(4)
-            for i,(k,_) in enumerate(FOTO_SLOTS):
-                p = (r.get("fotos") or {}).get(k)
-                gcols[i].image(p, width="stretch") if p and os.path.exists(p) else gcols[i].write("—")
-            cols[5].write(r["ts"])
-            can_delete = auth["role"] == "supervisor" and r["supervisorId"] == auth.get("supervisorId")
-            if can_delete and cols[6].button("Eliminar", key=r["id"]):
-                STORE["registros"][iso_week_key(fecha_sel)] = [x for x in STORE["registros"][iso_week_key(fecha_sel)] if x["id"] != r["id"]]
-                save_store(STORE)
-                export_week_folders(iso_week_key(fecha_sel), CATALOGO, STORE)
-                st.rerun()
-            if not can_delete:
-                cols[6].write("—")
-
-    # -------- Resumen: No lavadas (según CEDIS) --------
-    st.subheader(f"Unidades NO lavadas — {iso_week_key(fecha_sel)}")
-    if auth["role"] == "supervisor":
-        CEDIS_RES = (sup_by_id.get(auth.get("supervisorId") or "", {}) or {}).get("cedis","")
-    else:
-        CEDIS_RES = CEDIS
-
-    lavadas_set = {(r["unidadId"], r["cedis"]) for r in STORE.get("registros", {}).get(iso_week_key(fecha_sel), [])}
-    faltantes = [u for u in CATALOGO if (u["id"], u["cedis"]) not in lavadas_set and u["cedis"] == CEDIS_RES]
-
-    tabs = st.tabs([s["nombre"] for s in CONFIG["segmentos"]])
-    for i, seg in enumerate(CONFIG["segmentos"]):
-        with tabs[i]:
-            data = [u for u in faltantes if u["segmento"] == seg["id"]]
-            st.write(f"Total: {len(data)}")
-            if data:
-                st.dataframe({
-                    "Unidad": [u["id"] for u in data],
-                    "Segmento": [u["segmento"] for u in data]
-                }, width="stretch")
-            else:
-                st.success("¡Al día!")
-
-    # -------- Panel del administrador --------
-    if auth["role"] == "admin":
-        st.markdown("---")
-        st.header(f"Panel del administrador — {iso_week_key(fecha_sel)}")
-
-        c1, c2, c3, c4 = st.columns([1,1,1,2])
-        with c1:
-            admin_cedis = st.selectbox(
-                "CEDIS",
-                options=["all"] + [c["id"] for c in CONFIG["cedis"]],
-                format_func=lambda x: "Todos" if x=="all" else cedis_labels.get(x, x),
-            )
-        with c2:
-            admin_seg = st.selectbox(
-                "Segmento",
-                options=["all"] + [s["id"] for s in CONFIG["segmentos"]],
-                format_func=lambda x: "Todos" if x=="all" else next(s["nombre"] for s in CONFIG["segmentos"] if s["id"]==x),
-            )
-        with c3:
-            sup_all = CONFIG["supervisores"] if admin_cedis=="all" else [s for s in CONFIG["supervisores"] if norm(s["cedis"])==norm(admin_cedis)]
-            sup_map_all = {s["id"]: s for s in sup_all}
-            admin_sup = st.selectbox(
-                "Supervisor",
-                options=["all"] + [s["id"] for s in sup_all],
-                format_func=lambda x: "Todos" if x=="all" else sup_map_all.get(x,{}).get("nombre",""),
-            )
-        with c4:
-            admin_q = st.text_input("Buscar (unidad o supervisor)")
-
-        pool = CATALOGO[:]
-        if admin_cedis!="all": pool = [u for u in pool if u["cedis"] == admin_cedis]
-        if admin_seg!="all":   pool = [u for u in pool if u["segmento"] == admin_seg]
-        if admin_sup!="all":
-            ids_asig = {a["unidadId"] for a in CONFIG["asignaciones"] if a["supervisorId"] == admin_sup}
-            if ids_asig: pool = [u for u in pool if u["id"] in ids_asig]
-        if admin_q.strip():
-            q = norm(admin_q)
-            pool = [u for u in pool if q in norm(u["id"]) or q in norm(cedis_labels.get(u["cedis"], u["cedis"]))]
-
-        lav = STORE.get("registros", {}).get(iso_week_key(fecha_sel), [])[:]
-        if admin_cedis!="all": lav = [r for r in lav if r["cedis"] == admin_cedis]
-        if admin_seg!="all":   lav = [r for r in lav if r["segmento"] == admin_seg]
-        if admin_sup!="all":   lav = [r for r in lav if r["supervisorId"] == admin_sup]
-        if admin_q.strip():
-            q = norm(admin_q)
-            lav = [r for r in lav if q in norm(r["unidadLabel"]) or q in norm(r["supervisorNombre"])]
-
-        nolav = [u for u in pool if (u["id"], u["cedis"]) not in {(r["unidadId"], r["cedis"]) for r in lav}]
-
-        # Descargar XLSX combinado
-        xlsx_data = xlsx_week_bytes(iso_week_key(fecha_sel), lav, nolav)
-        st.download_button(
-            "Descargar XLSX (lavadas / no lavadas)",
-            data=xlsx_data,
-            file_name=f"reporte-{iso_week_key(fecha_sel)}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    DATABASE_URL = "sqlite:///store/app.db"
+
+_ENGINE = None
+_SessionLocal: Optional[sessionmaker] = None
+
+
+def get_engine():
+    """Crea y reutiliza el engine global."""
+    global _ENGINE, _SessionLocal
+    if _ENGINE is None:
+        _ENGINE = create_engine(
+            DATABASE_URL,
+            future=True,
+            pool_pre_ping=True,
+            pool_recycle=300,
         )
+        _SessionLocal = sessionmaker(bind=_ENGINE, expire_on_commit=False, future=True)
+    return _ENGINE
 
-        cA, cB = st.columns(2)
-        with cA:
-            st.subheader("Lavadas (filtros)")
-            st.write(f"Total: {len(lav)}")
-            if lav:
-                st.dataframe({
-                    "CEDIS": [cedis_labels.get(r["cedis"], r["cedis"]) for r in lav],
-                    "Supervisor": [r["supervisorNombre"] for r in lav],
-                    "Segmento": [r["segmento"] for r in lav],
-                    "Unidad": [r["unidadLabel"] for r in lav],
-                    "Fecha": [r["ts"] for r in lav],
-                    "Capturado por": [r.get("created_by","") for r in lav],
-                }, width="stretch")
-            csv_lav = csv_bytes(
-                [["week","cedis","supervisor","segmento","unidadId","timestamp","created_by"], *[
-                    [iso_week_key(fecha_sel), r["cedis"], r["supervisorNombre"], r["segmento"],
-                     r["unidadLabel"], r["ts"], r.get("created_by","")] for r in lav
-                ]]
-            )
-            st.download_button("Exportar LAVADAS (CSV)", data=csv_lav, file_name=f"lavadas-{iso_week_key(fecha_sel)}.csv", mime="text/csv")
 
-        with cB:
-            st.subheader("No lavadas (filtros)")
-            st.write(f"Total: {len(nolav)}")
-            if nolav:
-                st.dataframe({
-                    "CEDIS": [cedis_labels.get(u["cedis"], u["cedis"]) for u in nolav],
-                    "Segmento": [u["segmento"] for u in nolav],
-                    "Unidad": [u["id"] for u in nolav],
-                }, width="stretch")
-            csv_nolav = csv_bytes(
-                [["week","cedis","segmento","unidadId"], *[
-                    [iso_week_key(fecha_sel), u["cedis"], u["segmento"], u["id"]] for u in nolav
-                ]]
-            )
-            st.download_button("Exportar NO LAVADAS (CSV)", data=csv_nolav, file_name=f"no-lavadas-{iso_week_key(fecha_sel)}.csv", mime="text/csv")
+def get_session():
+    """Devuelve una sesión conectada al engine."""
+    if _SessionLocal is None:
+        get_engine()
+    assert _SessionLocal is not None
+    return _SessionLocal()
 
-        st.markdown("---")
-        # Export a carpetas + eliminar semana
-        cX, cY = st.columns([1,1])
-        with cX:
-            if st.button("Generar carpetas de la semana (lavados / no_lavados)"):
-                export_week_folders(iso_week_key(fecha_sel), CATALOGO, STORE,
-                                    only_cedis=None if admin_cedis=="all" else admin_cedis)
-                st.success("Carpetas listas en store/semanas/")
-        with cY:
-            if st.button(f"Eliminar TODO la semana {iso_week_key(fecha_sel)}", type="primary"):
-                delete_week(iso_week_key(fecha_sel), STORE)
-                st.success("Semana eliminada."); st.rerun()
 
-        st.markdown("---")
-        admin_user_manager(cedis_labels)
+def sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-# ---- run ----
-if __name__ == "__main__":
-    boot_guard(main)
+
+# =============== Base / Modelos ===============
+
+class Base(DeclarativeBase):
+    pass
+
+
+class User(Base):
+    __tablename__ = "users"
+    username: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False)  # 'admin' | 'supervisor'
+    password_hash: Mapped[str] = mapped_column(String, nullable=False)  # sha256
+    supervisor_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+
+class Lavado(Base):
+    __tablename__ = "lavados"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    week: Mapped[str] = mapped_column(String, index=True)
+    cedis: Mapped[str] = mapped_column(String, index=True)
+    supervisor_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    supervisor_nombre: Mapped[Optional[str]] = mapped_column(String)
+    unidad_id: Mapped[str] = mapped_column(String, index=True)
+    unidad_label: Mapped[Optional[str]] = mapped_column(String)
+    segmento: Mapped[Optional[str]] = mapped_column(String, index=True)
+    ts: Mapped[datetime.datetime] = mapped_column(DateTime, index=True)
+    created_by: Mapped[Optional[str]] = mapped_column(String)
+    fotos_json: Mapped[Optional[str]] = mapped_column(Text)       # {"frente": "...", ...}
+    foto_hashes_json: Mapped[Optional[str]] = mapped_column(Text) # {"frente": "sha256", ...}
+
+    __table_args__ = (
+        UniqueConstraint("week", "cedis", "unidad_id", name="uq_week_cedis_unidad"),
+    )
+
+
+# =============== Setup ===============
+
+def init_db() -> None:
+    """Crea tablas si no existen."""
+    eng = get_engine()
+    Base.metadata.create_all(eng)
+
+
+def healthcheck() -> None:
+    """Verifica conectividad básica."""
+    eng = get_engine()
+    with eng.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
+# =============== USERS (para login en SQL) ===============
+
+def upsert_user(u: Dict[str, Any]) -> None:
+    """
+    Crea/actualiza usuario.
+    Campos: username (obligatorio), name, role ('admin'|'supervisor'),
+            sha256 (o password_hash), supervisor_id (opcional).
+    """
+    with get_session() as s:
+        row = s.get(User, u["username"])
+        if row is None:
+            row = User(username=u["username"])
+            s.add(row)
+        row.name = u.get("name") or u.get("nombre") or u["username"]
+        row.role = u.get("role", "supervisor")
+        row.password_hash = u.get("sha256") or u.get("password_hash") or ""
+        row.supervisor_id = u.get("supervisor_id")
+        s.commit()
+
+
+def get_user(username: str) -> Optional[Dict[str, Any]]:
+    with get_session() as s:
+        row = s.get(User, username)
+        if not row:
+            return None
+        return {
+            "username": row.username,
+            "name": row.name,
+            "role": row.role,
+            "sha256": row.password_hash,
+            "supervisor_id": row.supervisor_id,
+        }
+
+
+def list_users() -> List[Dict[str, Any]]:
+    with get_session() as s:
+        rows = s.execute(select(User)).scalars().all()
+        return [
+            {
+                "username": r.username,
+                "name": r.name,
+                "role": r.role,
+                "supervisor_id": r.supervisor_id,
+            }
+            for r in rows
+        ]
+
+
+# =============== LAVADOS ===============
+
+def _parse_ts(ts_val: Any) -> datetime.datetime:
+    if isinstance(ts_val, datetime.datetime):
+        return ts_val
+    if isinstance(ts_val, str) and ts_val:
+        try:
+            return datetime.datetime.fromisoformat(ts_val.replace("Z", "").split("+")[0])
+        except Exception:
+            pass
+    return datetime.datetime.utcnow()
+
+
+def save_lavado(record: Dict[str, Any]) -> None:
+    """
+    UPSERT por (week, cedis, unidad_id): elimina el existente y crea uno nuevo.
+    record: id, week, cedis, supervisorId, supervisorNombre, unidadId, unidadLabel?,
+            segmento, ts?, created_by?, fotos?, foto_hashes?
+    """
+    with get_session() as s:
+        s.execute(delete(Lavado).where(
+            Lavado.week == record["week"],
+            Lavado.cedis == record["cedis"],
+            Lavado.unidad_id == record["unidadId"],
+        ))
+        row = Lavado(
+            id=record["id"],
+            week=record["week"],
+            cedis=record["cedis"],
+            supervisor_id=record.get("supervisorId"),
+            supervisor_nombre=record.get("supervisorNombre", ""),
+            unidad_id=record["unidadId"],
+            unidad_label=record.get("unidadLabel", record["unidadId"]),
+            segmento=record.get("segmento", ""),
+            ts=_parse_ts(record.get("ts")),
+            created_by=record.get("created_by", ""),
+            fotos_json=json.dumps(record.get("fotos") or {}),
+            foto_hashes_json=json.dumps(record.get("foto_hashes") or {}),
+        )
+        s.add(row)
+        s.commit()
+
+
+def delete_lavado(lavado_id: str) -> None:
+    with get_session() as s:
+        s.execute(delete(Lavado).where(Lavado.id == lavado_id))
+        s.commit()
+
+
+def get_lavados_week(week: str) -> List[Dict[str, Any]]:
+    with get_session() as s:
+        rows = s.execute(
+            select(Lavado).where(Lavado.week == week).order_by(Lavado.ts.desc())
+        ).scalars().all()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            out.append({
+                "id": r.id,
+                "week": r.week,
+                "cedis": r.cedis,
+                "supervisorId": r.supervisor_id,
+                "supervisorNombre": r.supervisor_nombre,
+                "unidadId": r.unidad_id,
+                "unidadLabel": r.unidad_label,
+                "segmento": r.segmento,
+                "fotos": json.loads(r.fotos_json or "{}"),
+                "foto_hashes": json.loads(r.foto_hashes_json or "{}"),
+                "ts": (r.ts or datetime.datetime.utcnow()).isoformat(timespec="seconds"),
+                "created_by": r.created_by,
+            })
+        return out
+
+
+def photo_hashes_all() -> Set[str]:
+    with get_session() as s:
+        rows = s.execute(select(Lavado.foto_hashes_json)).scalars().all()
+        hashes: Set[str] = set()
+        for js in rows:
+            try:
+                for h in (json.loads(js or "{}") or {}).values():
+                    if h:
+                        hashes.add(h)
+            except Exception:
+                pass
+        return hashes
