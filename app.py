@@ -23,6 +23,69 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
+# === Branding ===
+LOGO_URL = "https://tse1.mm.bing.net/th/id/OIP.QBCt9-dF3e4xLmEw_WVPmQHaCW?rs=1&pid=ImgDetMain&o=7&rm=3"
+
+def _cache_logo_locally() -> str | None:
+    """Descarga el logo 1 vez a data/_logo.png para usarlo como page_icon."""
+    try:
+        os.makedirs("data", exist_ok=True)
+        local = "data/_logo.png"
+        if not os.path.exists(local):
+            import requests
+            r = requests.get(LOGO_URL, timeout=10)
+            if r.ok:
+                with open(local, "wb") as f:
+                    f.write(r.content)
+        return local if os.path.exists(local) else None
+    except Exception:
+        return None
+
+def inject_css():
+    st.markdown("""
+    <style>
+      /* Layout base */
+      .main { padding-top: 0.25rem; }
+      div.block-container { max-width: 1200px; }
+
+      /* Header */
+      .app-header {
+        display:flex; align-items:center; gap:14px;
+        background:#fff; border:1px solid #eaeaea;
+        border-radius:16px; padding:12px 16px; 
+        box-shadow:0 8px 20px rgba(0,0,0,.04);
+        margin-bottom:12px;
+      }
+      .app-header .logo { height:48px; border-radius:8px; }
+      .app-header .title { font-weight:700; font-size:20px; letter-spacing:.2px; color:#0f172a; }
+      .app-header .subtitle { font-size:12px; color:#64748b; margin-top:-2px; }
+
+      /* Botones */
+      .stButton > button {
+        border-radius:12px; padding:10px 16px; font-weight:600;
+        border:1px solid #0ea5e9; background:#0ea5e9; color:#fff;
+        box-shadow:0 2px 0 rgba(14,165,233,.15);
+      }
+      .stButton > button:hover { filter: brightness(.97); }
+
+      /* Pills segmento */
+      div[role="radiogroup"] label {
+        border:1px solid #e5e7eb; border-radius:999px; padding:8px 14px; margin-right:8px;
+      }
+
+      /* Tablas */
+      .stDataFrame tbody tr:nth-child(odd){ background:#fafafa; }
+      .stDataFrame thead tr th { background:#f6f8fa !important; }
+
+      /* Uploader */
+      .stFileUploader { border-radius:12px; }
+
+      /* Ocultar menús de Streamlit para look corporativo */
+      #MainMenu, footer {visibility:hidden;}
+    </style>
+    """, unsafe_allow_html=True)
+
+
 # ============== BOOT GUARD (muestra errores en pantalla) ==============
 def boot_guard(fn):
     try:
@@ -309,6 +372,19 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
             st.success(f"Usuario '{username}' creado.")
             st.rerun()
 
+                # Header visual con logo
+    st.markdown(f"""
+    <div class="app-header">
+      <img src="{LOGO_URL}" class="logo" alt="logo" />
+      <div>
+        <div class="title">Lavado semanal de unidades</div>
+        <div class="subtitle">Control y evidencias · {auth['name']} · {auth['role'].capitalize()}</div>
+      </div>
+      <div style="margin-left:auto;"></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 # ========================== STORE (JSON LOCAL) ========================
 STORE_PATH = "store/store.json"
 
@@ -398,25 +474,18 @@ def export_week_folders(week: str, catalog: List[Dict[str, Any]], store: Dict[st
 
 # ================================ APP ================================
 def main():
-    st.set_page_config(page_title="Lavado semanal", layout="wide")
+    # Page config + favicon con tu logo
+    icon_path = _cache_logo_locally()
+    st.set_page_config(page_title="Lavado semanal", layout="wide",
+                       page_icon=icon_path if icon_path else None)
+
     ensure_dirs()
+    inject_css()  # <<—— estilo pro
 
     auth = require_login()     # obliga login
     CATALOGO = load_catalog()
     STORE = load_store()
     ALL_HASHES = collect_all_photo_hashes(STORE)
-
-    cedis_labels = {c["id"]: c["nombre"] for c in CONFIG["cedis"]}
-    sup_by_id = {s["id"]: s for s in CONFIG["supervisores"]}
-
-    # Header + logout
-    colH1, colH2 = st.columns([6,1])
-    with colH1:
-        st.title("Lavado semanal de unidades")
-        st.caption(f"Usuario: **{auth['name']}** · Rol: **{auth['role']}**")
-    with colH2:
-        if st.button("Cerrar sesión"):
-            st.session_state.pop("auth", None); st.rerun()
 
     # Filtros superiores
     cont = st.container()
