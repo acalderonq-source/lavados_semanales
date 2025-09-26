@@ -11,6 +11,16 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
+import streamlit as st
+st.set_page_config(page_title="Lavados", layout="wide")
+st.write("🔧 Iniciando aplicación...")
+
+from db import init_db
+try:
+    init_db()
+except Exception as e:
+    st.error(f"No me pude conectar a la base de datos. Revisa DATABASE_URL.\n\n{e}")
+    st.stop()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
