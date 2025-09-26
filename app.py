@@ -372,19 +372,6 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
             st.success(f"Usuario '{username}' creado.")
             st.rerun()
 
-                # Header visual con logo
-    st.markdown(f"""
-    <div class="app-header">
-      <img src="{LOGO_URL}" class="logo" alt="logo" />
-      <div>
-        <div class="title">Lavado semanal de unidades</div>
-        <div class="subtitle">Control y evidencias · {auth['name']} · {auth['role'].capitalize()}</div>
-      </div>
-      <div style="margin-left:auto;"></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-
 # ========================== STORE (JSON LOCAL) ========================
 STORE_PATH = "store/store.json"
 
@@ -474,18 +461,25 @@ def export_week_folders(week: str, catalog: List[Dict[str, Any]], store: Dict[st
 
 # ================================ APP ================================
 def main():
-    # Page config + favicon con tu logo
-    icon_path = _cache_logo_locally()
-    st.set_page_config(page_title="Lavado semanal", layout="wide",
-                       page_icon=icon_path if icon_path else None)
-
+    st.set_page_config(page_title="Lavado semanal", layout="wide")
     ensure_dirs()
-    inject_css()  # <<—— estilo pro
 
     auth = require_login()     # obliga login
     CATALOGO = load_catalog()
     STORE = load_store()
     ALL_HASHES = collect_all_photo_hashes(STORE)
+
+    cedis_labels = {c["id"]: c["nombre"] for c in CONFIG["cedis"]}
+    sup_by_id = {s["id"]: s for s in CONFIG["supervisores"]}
+
+    # Header + logout
+    colH1, colH2 = st.columns([6,1])
+    with colH1:
+        st.title("Lavado semanal de unidades")
+        st.caption(f"Usuario: **{auth['name']}** · Rol: **{auth['role']}**")
+    with colH2:
+        if st.button("Cerrar sesión"):
+            st.session_state.pop("auth", None); st.rerun()
 
     # Filtros superiores
     cont = st.container()
