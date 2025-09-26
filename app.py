@@ -185,6 +185,8 @@ CONFIG: Dict[str, Any] = {
         {"id": "La Cruz", "nombre": "La Cruz"},
     ],
     "supervisores": [
+        #TRANSPORTADORA
+        {"id": "sup-ronny-garita", "nombre": "Ronny Garita", "cedis": "Transportadora"},
         # CARTAGO
         {"id": "sup-miguel-gomez",   "nombre": "Miguel Gomez",   "cedis": "cartago",  "segmento": "hinos"},
         {"id": "sup-erick-valerin",  "nombre": "Erick Valerin",  "cedis": "cartago",  "segmento": "graneles"},
