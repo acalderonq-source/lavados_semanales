@@ -1,13 +1,9 @@
-# db.py — capa de datos (SQLAlchemy 2.x) para MySQL (Railway) o SQLite local
-# --------------------------------------------------------------------------
+# db.py — SQLAlchemy 2.x para MySQL (Railway) o SQLite local
 # Requisitos en requirements.txt:
 # SQLAlchemy==2.0.43
-# PyMySQL==1.1.0   (necesario para mysql+pymysql://)
-# --------------------------------------------------------------------------
+# PyMySQL==1.1.0   # para mysql+pymysql://
 
-import os
-import json
-import datetime
+import os, json, datetime
 from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy import (
@@ -16,67 +12,63 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-# ---------- Configurar URL de BD ----------
+# ---------- URL de BD ----------
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-
-# Si vienes de Railway y te dan un DSN "mysql://...", cámbialo a mysql+pymysql://
+# Railway suele dar "mysql://..."; cámbialo a mysql+pymysql://
 if DATABASE_URL.startswith("mysql://"):
     DATABASE_URL = DATABASE_URL.replace("mysql://", "mysql+pymysql://", 1)
 
-# Fallback local si no hay env (útil en desarrollo)
+# Fallback local
 if not DATABASE_URL:
     os.makedirs("store", exist_ok=True)
     DATABASE_URL = "sqlite:///store/app.db"
 
-# ---------- Engine y sesión ----------
+# ---------- Engine/Sesión ----------
 engine = create_engine(
     DATABASE_URL,
     future=True,
-    pool_pre_ping=True,   # evita conexiones muertas
+    pool_pre_ping=True,
     pool_recycle=300,
 )
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
-# ---------- Base y modelos ----------
+# ---------- Base/Modelos ----------
 class Base(DeclarativeBase):
     pass
 
 class User(Base):
     __tablename__ = "users"
-    username: Mapped[str] = mapped_column(String, primary_key=True)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    role: Mapped[str] = mapped_column(String, nullable=False)  # 'admin' | 'supervisor'
-    password_hash: Mapped[str] = mapped_column(String, nullable=False)  # sha256
-    supervisor_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Longitudes seguras para MySQL (utf8mb4 + índices)
+    username: Mapped[str] = mapped_column(String(191), primary_key=True)  # PK
+    name: Mapped[str] = mapped_column(String(191), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)         # 'admin'|'supervisor'
+    password_hash: Mapped[str] = mapped_column(String(128), nullable=False)  # sha256 hex
+    supervisor_id: Mapped[Optional[str]] = mapped_column(String(191), nullable=True)
 
 class Lavado(Base):
     __tablename__ = "lavados"
-    id: Mapped[str]                 = mapped_column(String, primary_key=True)
-    week: Mapped[str]               = mapped_column(String, index=True)
-    cedis: Mapped[str]              = mapped_column(String, index=True)
-    supervisor_id: Mapped[Optional[str]]     = mapped_column(String, index=True)
-    supervisor_nombre: Mapped[Optional[str]] = mapped_column(String)
-    unidad_id: Mapped[str]          = mapped_column(String, index=True)
-    unidad_label: Mapped[Optional[str]] = mapped_column(String)
-    segmento: Mapped[Optional[str]] = mapped_column(String, index=True)
+    id: Mapped[str]                 = mapped_column(String(32), primary_key=True)  # uuid4().hex = 32
+    week: Mapped[str]               = mapped_column(String(16), index=True)        # p.ej. 2025-W39
+    cedis: Mapped[str]              = mapped_column(String(64), index=True)
+    supervisor_id: Mapped[Optional[str]]     = mapped_column(String(191), index=True)
+    supervisor_nombre: Mapped[Optional[str]] = mapped_column(String(191))
+    unidad_id: Mapped[str]          = mapped_column(String(64), index=True)
+    unidad_label: Mapped[Optional[str]] = mapped_column(String(128))
+    segmento: Mapped[Optional[str]] = mapped_column(String(32), index=True)
     ts: Mapped[datetime.datetime]   = mapped_column(DateTime, index=True)
-    created_by: Mapped[Optional[str]] = mapped_column(String)
-    fotos_json: Mapped[Optional[str]] = mapped_column(Text)      # {"frente":path,...}
-    foto_hashes_json: Mapped[Optional[str]] = mapped_column(Text) # {"frente":hash,...}
+    created_by: Mapped[Optional[str]] = mapped_column(String(191))
+    fotos_json: Mapped[Optional[str]] = mapped_column(Text)       # JSON serializado
+    foto_hashes_json: Mapped[Optional[str]] = mapped_column(Text) # JSON serializado
 
     __table_args__ = (
         UniqueConstraint("week", "cedis", "unidad_id", name="uq_week_cedis_unidad"),
     )
 
-# ---------- Bootstrap / utilidades ----------
+# ---------- Bootstrap / Utils ----------
 def init_db() -> None:
-    """Crea tablas si no existen."""
     Base.metadata.create_all(engine)
 
 def healthcheck():
-    """
-    Devuelve (ok: bool, msg: str) para mostrar en la UI.
-    """
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -97,18 +89,13 @@ def _parse_ts(ts_val: Any) -> datetime.datetime:
         return ts_val
     if isinstance(ts_val, str) and ts_val:
         try:
-            return datetime.datetime.fromisoformat(ts_val.replace("Z", "").split("+")[0])
+            return datetime.datetime.fromisoformat(ts_val.replace("Z","").split("+")[0])
         except Exception:
             pass
     return datetime.datetime.utcnow()
 
-# ---------- USERS ----------
+# ---------- Users ----------
 def upsert_user(u: Dict[str, Any]) -> None:
-    """
-    Crea/actualiza usuario.
-    Campos:
-      username, name, role('admin'|'supervisor'), sha256|password_hash, supervisor_id?
-    """
     with SessionLocal() as s:
         row = s.get(User, u["username"])
         if row is None:
@@ -143,11 +130,8 @@ def list_users() -> List[Dict[str, Any]]:
             "supervisor_id": r.supervisor_id
         } for r in rows]
 
-# ---------- LAVADOS ----------
+# ---------- Lavados ----------
 def save_lavado(record: Dict[str, Any]) -> None:
-    """
-    UPSERT por (week, cedis, unidad_id): borra el existente y crea uno nuevo.
-    """
     with SessionLocal() as s:
         s.execute(delete(Lavado).where(
             Lavado.week == record["week"],
@@ -159,12 +143,12 @@ def save_lavado(record: Dict[str, Any]) -> None:
             week=record["week"],
             cedis=record["cedis"],
             supervisor_id=record.get("supervisorId"),
-            supervisor_nombre=record.get("supervisorNombre", ""),
+            supervisor_nombre=record.get("supervisorNombre",""),
             unidad_id=record["unidadId"],
             unidad_label=record.get("unidadLabel", record["unidadId"]),
-            segmento=record.get("segmento", ""),
+            segmento=record.get("segmento",""),
             ts=_parse_ts(record.get("ts")),
-            created_by=record.get("created_by", ""),
+            created_by=record.get("created_by",""),
             fotos_json=json.dumps(record.get("fotos") or {}),
             foto_hashes_json=json.dumps(record.get("foto_hashes") or {}),
         )
@@ -206,11 +190,10 @@ def photo_hashes_all() -> Set[str]:
         for js in rows:
             try:
                 for h in (json.loads(js or "{}") or {}).values():
-                    if h:
-                        hashes.add(h)
+                    if h: hashes.add(h)
             except Exception:
                 pass
         return hashes
 
-# Inicializa tablas al importar el módulo (seguro idempotente)
+# Crear tablas
 init_db()
