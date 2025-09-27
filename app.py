@@ -2,20 +2,27 @@
 # --------------------------------------
 # - Login con roles (admin / supervisor)
 # - Supervisores capturan lavados con 4 fotos obligatorias (frente, atrás, lado, cabina)
-# - Bloqueo de fotos repetidas por hash SHA-256 (local/global)
+# - Detección de fotos repetidas por hash SHA-256 (global, consultando la BD)
 # - Catálogos desde ./data/*.json
 # - Export CSV/XLSX y export a carpetas por semana
 # - Admin NO puede capturar ni borrar; solo ver, exportar y gestionar usuarios
 # - Boot-guard: muestra errores en pantalla (evita "pantalla negra")
 
 from __future__ import annotations
+
 import os, io, csv, json, uuid, hashlib, shutil, traceback
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-from db import healthcheck  # debe devolver (ok: bool, msg: str)
+
+# Funciones de la capa de datos (tu db.py debe exponer estas):
+from db import (
+    init_db, healthcheck,
+    upsert_user, get_user, list_users,
+    save_lavado, get_lavados_week, delete_lavado, photo_hashes_all
+)
 
 # ======================= Branding / Estilos =======================
 
@@ -72,11 +79,9 @@ def boot_guard(fn):
 
 # ========================= Utilidades base =======================
 
-BASE_DIR = os.getenv("DATA_DIR", "store")       # raíz de datos
-EVIDENCE_DIR = os.path.join(BASE_DIR, "evidence")
-WEEKS_DIR = os.path.join(BASE_DIR, "semanas")
-STORE_JSON = os.path.join(BASE_DIR, "store.json")
-USERS_JSON = "data/users.json"
+BASE_DIR    = os.getenv("DATA_DIR", "store")       # raíz de datos (archivos)
+EVIDENCE_DIR= os.path.join(BASE_DIR, "evidence")
+WEEKS_DIR   = os.path.join(BASE_DIR, "semanas")
 
 def norm(s: Any) -> str:
     import unicodedata
@@ -171,20 +176,29 @@ CONFIG: Dict[str, Any] = {
         {"id": "La Cruz", "nombre": "La Cruz"},
     ],
     "supervisores": [
+        # TRANSPORTADORA
         {"id": "sup-ronny-garita", "nombre": "Ronny Garita", "cedis": "Transportadora"},
-        {"id": "sup-miguel-gomez",   "nombre": "Miguel Gomez",   "cedis": "cartago",  "segmento": "hinos"},
-        {"id": "sup-erick-valerin",  "nombre": "Erick Valerin",  "cedis": "cartago",  "segmento": "graneles"},
+        # CARTAGO
+        {"id": "sup-miguel-gomez",  "nombre": "Miguel Gomez",  "cedis": "cartago",  "segmento": "hinos"},
+        {"id": "sup-erick-valerin", "nombre": "Erick Valerin", "cedis": "cartago",  "segmento": "graneles"},
+        # GUÁPILES
         {"id": "sup-enrique-herrera","nombre": "Enrique Herrera","cedis": "guapiles"},
-        {"id": "sup-raul-retana",    "nombre": "Raul Retana",    "cedis": "guapiles", "segmento": "hinos"},
-        {"id": "sup-adrian-veita",   "nombre": "Adrian Veita",   "cedis": "Perez Zeledon"},
-        {"id": "sup-luis-solis",     "nombre": "Luis Solis",     "cedis": "Perez Zeledon"},
-        {"id": "sup-daniel-salas",   "nombre": "Daniel Salas",   "cedis": "La Cruz"},
+        {"id": "sup-raul-retana",   "nombre": "Raul Retana",   "cedis": "guapiles", "segmento": "hinos"},
+        # PÉREZ ZELEDÓN
+        {"id": "sup-adrian-veita",  "nombre": "Adrian Veita",  "cedis": "Perez Zeledon"},
+        {"id": "sup-luis-solis",    "nombre": "Luis Solis",    "cedis": "Perez Zeledon"},
+        # LA CRUZ
+        {"id": "sup-daniel-salas",  "nombre": "Daniel Salas",  "cedis": "La Cruz"},
         {"id": "sup-roberto-chirino","nombre": "Roberto Chirino","cedis": "La Cruz"},
+        # ALAJUELA
         {"id": "sup-cristian-bolanos","nombre":"Cristian Bolaños","cedis":"alajuela","segmento":"graneles"},
         {"id": "sup-roberto-vargas",  "nombre":"Roberto Vargas",  "cedis":"alajuela","segmento":"hinos"},
+        # SAN CARLOS
         {"id": "sup-cristofer-carranza","nombre":"Cristofer Carranza","cedis":"San Carlos"},
-        {"id": "sup-victor-cordero", "nombre":"Victor Cordero","cedis":"Rio Claro"},
-        {"id": "sup-luis-rivas",     "nombre":"Luis Rivas","cedis":"Nicoya"},
+        # RÍO CLARO
+        {"id": "sup-victor-cordero", "nombre": "Victor Cordero", "cedis": "Rio Claro"},
+        # NICOYA
+        {"id": "sup-luis-rivas",    "nombre": "Luis Rivas",    "cedis": "Nicoya"},
     ],
     "asignaciones": [
         # ejemplo: {"supervisorId": "sup-miguel-gomez", "unidadId": "C170135"},
@@ -240,59 +254,42 @@ def load_catalog() -> List[Dict[str, Any]]:
 
 # ============================== Usuarios ============================
 
-def load_users() -> Dict[str, Any]:
-    data = load_json(USERS_JSON)
-    if not isinstance(data, dict):
-        data = {"users": []}
-    data.setdefault("users", [])
-    if not any(norm(u.get("username")) == "admin" for u in data["users"]):
-        data["users"].append({"username": "admin", "name": "Administrador", "role": "admin", "password": "admin123"})
-        save_users(data)
-    return data
-
-def save_users(data: Dict[str, Any]):
-    save_json(USERS_JSON, data)
-
-def verify_password(user: Dict[str, Any], plain: str) -> bool:
-    if "sha256" in user:
-        return sha256_bytes(plain.encode("utf-8")) == user["sha256"]
-    if "password" in user:
-        return user["password"] == plain
-    return False
-
 def require_login() -> Dict[str, Any]:
     if "auth" in st.session_state and st.session_state["auth"].get("ok"):
         return st.session_state["auth"]
 
-    users = load_users().get("users", [])
     st.title("Lavado semanal de unidades")
     st.subheader("Iniciar sesión")
 
     c1, c2 = st.columns(2)
     with c1:
-        username = st.text_input("Usuario")
+        username = st.text_input("Usuario").strip()
     with c2:
         password = st.text_input("Contraseña", type="password")
 
     if st.button("Entrar"):
-        u = next((u for u in users if norm(u.get("username")) == norm(username)), None)
-        if not u or not verify_password(u, password):
-            st.error("Usuario o contraseña incorrectos.")
-            st.stop()
+        u = get_user(username)  # desde BD
+        if not u:
+            st.error("Usuario o contraseña incorrectos."); st.stop()
+
+        pwd_ok = (u.get("sha256") == hashlib.sha256(password.encode("utf-8")).hexdigest())
+        if not pwd_ok:
+            st.error("Usuario o contraseña incorrectos."); st.stop()
+
         st.session_state["auth"] = {
             "ok": True,
             "username": u["username"],
-            "name": u.get("name") or u.get("nombre") or u["username"],
+            "name": u.get("name") or u["username"],
             "role": u.get("role", "supervisor"),
             "supervisorId": u.get("supervisor_id"),
         }
         st.rerun()
+
     st.stop()
 
 def admin_user_manager(cedis_labels: Dict[str, str]):
     st.header("Gestión de usuarios")
-    data = load_users()
-    users = data.get("users", [])
+    users = list_users()  # desde BD
 
     sup_opts = {s["id"]: f'{s["nombre"]} · {cedis_labels.get(s["cedis"], s["cedis"])}'
                 for s in CONFIG["supervisores"]}
@@ -301,8 +298,8 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
         st.subheader("Usuarios actuales")
         st.dataframe({
             "Usuario": [u.get("username","") for u in users],
-            "Nombre": [u.get("name") or u.get("nombre","") for u in users],
-            "Rol":    [u.get("role","") for u in users],
+            "Nombre":  [u.get("name","") for u in users],
+            "Rol":     [u.get("role","") for u in users],
             "Supervisor ID": [u.get("supervisor_id","") for u in users],
         }, width="stretch")
     else:
@@ -331,8 +328,6 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
         if btn:
             if not username:
                 st.error("Usuario obligatorio."); st.stop()
-            if any(norm(u.get("username","")) == norm(username) for u in users):
-                st.error("Ese usuario ya existe."); st.stop()
             if not password or len(password) < 4:
                 st.error("La contraseña debe tener al menos 4 caracteres."); st.stop()
             if role == "supervisor" and not sup_id:
@@ -342,35 +337,14 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
                 "username": username,
                 "name": name or username,
                 "role": role,
-                "sha256": sha256_bytes(password.encode("utf-8")),
+                "sha256": hashlib.sha256(password.encode("utf-8")).hexdigest(),
+                "supervisor_id": sup_id if role == "supervisor" else None,
             }
-            if role == "supervisor":
-                new_user["supervisor_id"] = sup_id
-            users.append(new_user)
-            save_users({"users": users})
+            upsert_user(new_user)  # guarda en BD
             st.success(f"Usuario '{username}' creado.")
             st.rerun()
 
-# ============================= Store JSON ===========================
-
-def load_store() -> Dict[str, Any]:
-    data = load_json(STORE_JSON)
-    if not isinstance(data, dict):
-        data = {"registros": {}}
-    data.setdefault("registros", {})
-    return data
-
-def save_store(data: Dict[str, Any]):
-    save_json(STORE_JSON, data)
-
-def collect_all_photo_hashes(store: Dict[str, Any]) -> set:
-    hashes = set()
-    for lst in store.get("registros", {}).values():
-        for r in lst:
-            for h in (r.get("foto_hashes") or {}).values():
-                if h:
-                    hashes.add(h)
-    return hashes
+# ============================= Fotos / Export ===========================
 
 def save_photo(file, subname: str, week: str, cedis: str, unidad_id: str) -> Optional[str]:
     if not file:
@@ -384,20 +358,14 @@ def save_photo(file, subname: str, week: str, cedis: str, unidad_id: str) -> Opt
         f.write(file.getbuffer())
     return path
 
-def delete_week(week: str, store: Dict[str, Any]):
-    store["registros"].pop(week, None)
-    save_store(store)
-    shutil.rmtree(os.path.join(EVIDENCE_DIR, week), ignore_errors=True)
-    shutil.rmtree(os.path.join(WEEKS_DIR, week), ignore_errors=True)
-
-def export_week_folders(week: str, catalog: List[Dict[str, Any]], store: Dict[str, Any], only_cedis: Optional[str] = None):
+def export_week_folders(week: str, catalog: List[Dict[str, Any]], registros_semana: List[Dict[str, Any]], only_cedis: Optional[str] = None):
     base = os.path.join(WEEKS_DIR, week)
     lav_dir = os.path.join(base, "lavados")
     nolav_dir = os.path.join(base, "no_lavados")
     os.makedirs(lav_dir, exist_ok=True)
     os.makedirs(nolav_dir, exist_ok=True)
 
-    registros = store.get("registros", {}).get(week, [])[:]
+    registros = registros_semana[:]
     if only_cedis:
         registros = [r for r in registros if r["cedis"] == only_cedis]
         cat = [u for u in catalog if u["cedis"] == only_cedis]
@@ -441,12 +409,32 @@ def export_week_folders(week: str, catalog: List[Dict[str, Any]], store: Dict[st
     with open(os.path.join(base, "resumen.csv"), "wb") as f:
         f.write(csv_bytes(rows))
 
+def delete_week_everywhere(week: str, registros_semana: List[Dict[str, Any]]):
+    # borra en BD todos los registros de esa semana + limpia carpetas locales
+    for r in registros_semana:
+        try:
+            delete_lavado(r["id"])
+        except Exception:
+            pass
+    shutil.rmtree(os.path.join(EVIDENCE_DIR, week), ignore_errors=True)
+    shutil.rmtree(os.path.join(WEEKS_DIR, week), ignore_errors=True)
+
 # =============================== App ===============================
 
 def main():
     st.set_page_config(page_title="Lavado semanal", layout="wide")
     ensure_dirs()
     inject_css()
+
+    # Conectar BD
+    init_db()
+    ok, msg = healthcheck()
+    with st.sidebar:
+        st.subheader("Estado BD")
+        if ok:
+            st.success(f"✅ {msg}")
+        else:
+            st.error(f"❌ {msg}")
 
     # Header visual
     st.markdown(
@@ -462,20 +450,8 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # Estado de la base de datos (sidebar)
-    ok, msg = healthcheck()  # tu db.healthcheck debe devolver (bool, str)
-    with st.sidebar:
-        st.subheader("Estado BD")
-        if ok:
-            st.success(f"Conectado: {msg}", icon="✅")
-        else:
-            st.error(f"Sin conexión: {msg}", icon="❌")
-
-    auth = require_login()     # obliga login
+    auth = require_login()      # obliga login
     CATALOGO = load_catalog()
-    STORE = load_store()
-    ALL_HASHES = collect_all_photo_hashes(STORE)
-
     cedis_labels = {c["id"]: c["nombre"] for c in CONFIG["cedis"]}
     sup_by_id = {s["id"]: s for s in CONFIG["supervisores"]}
 
@@ -577,14 +553,14 @@ def main():
                         st.error("No podés subir la misma foto en dos posiciones distintas.", icon="🚫")
                         st.stop()
 
-                    # duplicados globales
-                    ALL_HASHES = collect_all_photo_hashes(STORE)
-                    repetidas = [k for k,h in hashes_local.items() if h in ALL_HASHES]
+                    # duplicados globales (en BD)
+                    all_hashes = photo_hashes_all()  # set de hashes en BD
+                    repetidas = [k for k,h in hashes_local.items() if h in all_hashes]
                     if repetidas:
                         st.error(f"Estas fotos ya se usaron antes: {', '.join(repetidas)}.", icon="🚫")
                         st.stop()
 
-                    # guardar fotos
+                    # guardar fotos en disco
                     fotos_paths = {k: save_photo(uploads[k], k, WEEK, CEDIS, unidad) for k,_ in FOTO_SLOTS}
 
                     u = next((x for x in CATALOGO if x["id"] == unidad and x["cedis"] == CEDIS), None)
@@ -602,18 +578,16 @@ def main():
                         "ts": datetime.now().isoformat(timespec="seconds"),
                         "created_by": auth["username"],
                     }
-                    STORE.setdefault("registros", {})
-                    lst = STORE["registros"].setdefault(WEEK, [])
-                    lst = [r for r in lst if not (r["unidadId"] == unidad and r["cedis"] == CEDIS)]
-                    lst.append(record)
-                    STORE["registros"][WEEK] = lst
-                    save_store(STORE)
+
+                    # guardar en BD
+                    save_lavado(record)
                     st.success("¡Guardado!")
+                    st.rerun()
 
     # -------- Tabla de registros --------
     WEEK_CUR = iso_week_key(fecha_sel)
     st.subheader(f"Registros — {WEEK_CUR}")
-    reg_semana = STORE.get("registros", {}).get(WEEK_CUR, [])
+    reg_semana = get_lavados_week(WEEK_CUR)  # desde BD
     if auth["role"] == "supervisor":
         reg_semana = [r for r in reg_semana if r["supervisorId"] == auth.get("supervisorId")]
 
@@ -630,15 +604,13 @@ def main():
             for i,(k,_) in enumerate(FOTO_SLOTS):
                 p = (r.get("fotos") or {}).get(k)
                 if p and os.path.exists(p):
-                    gcols[i].image(p, width="stretch")
+                    gcols[i].image(p, use_column_width=True)
                 else:
                     gcols[i].write("—")
             cols[5].write(r["ts"])
             can_delete = auth["role"] == "supervisor" and r["supervisorId"] == auth.get("supervisorId")
             if can_delete and cols[6].button("Eliminar", key=r["id"]):
-                STORE["registros"][WEEK_CUR] = [x for x in STORE["registros"][WEEK_CUR] if x["id"] != r["id"]]
-                save_store(STORE)
-                export_week_folders(WEEK_CUR, CATALOGO, STORE)
+                delete_lavado(r["id"])  # BD
                 st.rerun()
             if not can_delete:
                 cols[6].write("—")
@@ -650,7 +622,7 @@ def main():
     else:
         CEDIS_RES = CEDIS
 
-    lavadas_set = {(r["unidadId"], r["cedis"]) for r in STORE.get("registros", {}).get(WEEK_CUR, [])}
+    lavadas_set = {(r["unidadId"], r["cedis"]) for r in reg_semana}
     faltantes = [u for u in CATALOGO if (u["id"], u["cedis"]) not in lavadas_set and u["cedis"] == CEDIS_RES]
 
     tabs = st.tabs([s["nombre"] for s in CONFIG["segmentos"]])
@@ -695,6 +667,7 @@ def main():
         with c4:
             admin_q = st.text_input("Buscar (unidad o supervisor)")
 
+        # Filtros sobre catálogo y registros
         pool = CATALOGO[:]
         if admin_cedis!="all": pool = [u for u in pool if u["cedis"] == admin_cedis]
         if admin_seg!="all":   pool = [u for u in pool if u["segmento"] == admin_seg]
@@ -705,7 +678,7 @@ def main():
             q = norm(admin_q)
             pool = [u for u in pool if q in norm(u["id"]) or q in norm(cedis_labels.get(u["cedis"], u["cedis"]))]
 
-        lav = STORE.get("registros", {}).get(WEEK_CUR, [])[:]
+        lav = get_lavados_week(WEEK_CUR)  # BD
         if admin_cedis!="all": lav = [r for r in lav if r["cedis"] == admin_cedis]
         if admin_seg!="all":   lav = [r for r in lav if r["segmento"] == admin_seg]
         if admin_sup!="all":   lav = [r for r in lav if r["supervisorId"] == admin_sup]
@@ -765,13 +738,13 @@ def main():
         cX, cY = st.columns([1,1])
         with cX:
             if st.button("Generar carpetas de la semana (lavados / no_lavados)"):
-                export_week_folders(WEEK_CUR, CATALOGO, STORE,
+                export_week_folders(WEEK_CUR, CATALOGO, lav,
                                     only_cedis=None if admin_cedis=="all" else admin_cedis)
                 st.success(f"Carpetas listas en {os.path.join(WEEKS_DIR, WEEK_CUR)}")
         with cY:
             if st.button(f"Eliminar TODO la semana {WEEK_CUR}", type="primary"):
-                delete_week(WEEK_CUR, STORE)
-                st.success("Semana eliminada.")
+                delete_week_everywhere(WEEK_CUR, lav)
+                st.success("Semana eliminada (BD + carpetas).")
                 st.rerun()
 
         st.markdown("---")
