@@ -47,6 +47,48 @@ EVIDENCE_DIR = os.path.join(BASE_DIR, "evidence")
 WEEKS_DIR = os.path.join(BASE_DIR, "semanas")
 STORE_PATH = os.path.join(BASE_DIR, "store.json")
 
+import io
+import pandas as pd
+
+def xlsx_week_bytes(week: str, lav: list[dict], nolav: list[dict]) -> bytes:
+    """
+    Genera un XLSX en memoria con dos hojas:
+      - 'Lavadas'  (week, cedis, supervisor, segmento, unidadId, timestamp, created_by)
+      - 'No_lavadas' (week, cedis, segmento, unidadId)
+    Devuelve los bytes del archivo listo para st.download_button.
+    """
+    bio = io.BytesIO()
+
+    df_lav = pd.DataFrame([{
+        "week": week,
+        "cedis": r.get("cedis", ""),
+        "supervisor": r.get("supervisorNombre", ""),
+        "segmento": r.get("segmento", ""),
+        "unidadId": r.get("unidadId") or r.get("unidadLabel", ""),
+        "timestamp": r.get("ts", ""),
+        "created_by": r.get("created_by", "")
+    } for r in (lav or [])])
+
+    df_nolav = pd.DataFrame([{
+        "week": week,
+        "cedis": u.get("cedis", ""),
+        "segmento": u.get("segmento", ""),
+        "unidadId": u.get("id", "")
+    } for u in (nolav or [])])
+
+    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+        (df_lav if not df_lav.empty else pd.DataFrame(
+            columns=["week","cedis","supervisor","segmento","unidadId","timestamp","created_by"]
+        )).to_excel(writer, sheet_name="Lavadas", index=False)
+
+        (df_nolav if not df_nolav.empty else pd.DataFrame(
+            columns=["week","cedis","segmento","unidadId"]
+        )).to_excel(writer, sheet_name="No_lavadas", index=False)
+
+    bio.seek(0)
+    return bio.getvalue()
+
+
 # === Branding ===
 LOGO_URL = "https://tse1.mm.bing.net/th/id/OIP.QBCt9-dF3e4xLmEw_WVPmQHaCW?rs=1&pid=ImgDetMain&o=7&rm=3"
 
