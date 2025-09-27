@@ -19,6 +19,46 @@ elif DATABASE_URL.startswith("postgresql://") and "+psycopg2" not in DATABASE_UR
 if not DATABASE_URL:
     os.makedirs("store", exist_ok=True)
     DATABASE_URL = "sqlite:///store/app.db"
+# db.py
+from sqlalchemy import create_engine, text
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+if DATABASE_URL.startswith("mysql://"):
+    DATABASE_URL = DATABASE_URL.replace("mysql://", "mysql+pymysql://", 1)
+
+if not DATABASE_URL:
+    os.makedirs("store", exist_ok=True)
+    DATABASE_URL = "sqlite:///store/app.db"
+
+engine = create_engine(
+    DATABASE_URL,
+    future=True,
+    pool_pre_ping=True,
+    pool_recycle=300,
+)
+
+def healthcheck():
+    """
+    Devuelve (ok: bool, msg: str).
+    Si ok=True: conectado y msg incluye versión/host.
+    Si ok=False: msg tiene el error.
+    """
+    try:
+        with engine.connect() as conn:
+            # SELECT 1 (ping) y versión del servidor
+            conn.execute(text("SELECT 1"))
+            try:
+                ver = conn.execute(text("SELECT VERSION()")).scalar()
+            except Exception:
+                ver = "desconocida"
+            url = engine.url
+            host = getattr(url, "host", None) or "?"
+            port = getattr(url, "port", None) or "?"
+            dbn  = getattr(url, "database", None) or "?"
+            return True, f"{url.get_backend_name()} conectado · {host}:{port} / {dbn} · versión {ver}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 from __future__ import annotations
 

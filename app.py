@@ -12,7 +12,7 @@ from __future__ import annotations
 import os, io, csv, json, uuid, hashlib, shutil, traceback
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
-
+from db import healthcheck
 import pandas as pd
 import streamlit as st
 
@@ -68,6 +68,12 @@ def boot_guard(fn):
         st.exception(e)
         st.code("".join(traceback.format_exc()))
         st.stop()
+        ok, msg = healthcheck()
+st.sidebar.markdown("### Estado BD")
+if ok:
+    st.sidebar.success(f"✅ {msg}")
+else:
+    st.sidebar.error(f"❌ {msg}")
 
 # ========================= Utilidades base =======================
 
