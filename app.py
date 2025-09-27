@@ -24,6 +24,24 @@ import pandas as pd
 import streamlit as st
 import os
 
+# --- utilidades de archivo JSON (necesarias para load_users, catálogos, etc.) ---
+import json, os
+
+def load_json(path: str):
+    """Lee un JSON y devuelve el objeto; si falla, devuelve None."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def save_json(path: str, data):
+    """Guarda un objeto en JSON (crea la carpeta si no existe)."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
 BASE_DIR = os.getenv("DATA_DIR", "store")       # <- si no hay DATA_DIR, usa ./store local
 EVIDENCE_DIR = os.path.join(BASE_DIR, "evidence")
 WEEKS_DIR = os.path.join(BASE_DIR, "semanas")
