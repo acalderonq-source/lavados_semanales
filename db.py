@@ -5,6 +5,20 @@
 # - Modelos: User, Lavado.
 # - Funciones: init_db, healthcheck, upsert_user, get_user, list_users,
 #              save_lavado, delete_lavado, get_lavados_week, photo_hashes_all.
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+# Normaliza esquemas que pone Railway:
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+elif DATABASE_URL.startswith("postgresql://") and "+psycopg2" not in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+# Fallback local solo para desarrollo
+if not DATABASE_URL:
+    os.makedirs("store", exist_ok=True)
+    DATABASE_URL = "sqlite:///store/app.db"
 
 from __future__ import annotations
 
