@@ -1,5 +1,5 @@
-streamlit==1.38.0
-pandas==2.2.2
+streamlit==1.50.0
+pandas==2.3.2
 xlsxwriter==3.2.9
 SQLAlchemy==2.0.43
 psycopg2-binary==2.9.10
