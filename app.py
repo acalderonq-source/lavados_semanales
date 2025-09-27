@@ -12,9 +12,10 @@ from __future__ import annotations
 import os, io, csv, json, uuid, hashlib, shutil, traceback
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
-from db import healthcheck
+
 import pandas as pd
 import streamlit as st
+from db import healthcheck  # debe devolver (ok: bool, msg: str)
 
 # ======================= Branding / Estilos =======================
 
@@ -68,12 +69,6 @@ def boot_guard(fn):
         st.exception(e)
         st.code("".join(traceback.format_exc()))
         st.stop()
-        ok, msg = healthcheck()
-st.sidebar.markdown("### Estado BD")
-if ok:
-    st.sidebar.success(f"✅ {msg}")
-else:
-    st.sidebar.error(f"❌ {msg}")
 
 # ========================= Utilidades base =======================
 
@@ -466,6 +461,15 @@ def main():
         """,
         unsafe_allow_html=True,
     )
+
+    # Estado de la base de datos (sidebar)
+    ok, msg = healthcheck()  # tu db.healthcheck debe devolver (bool, str)
+    with st.sidebar:
+        st.subheader("Estado BD")
+        if ok:
+            st.success(f"Conectado: {msg}", icon="✅")
+        else:
+            st.error(f"Sin conexión: {msg}", icon="❌")
 
     auth = require_login()     # obliga login
     CATALOGO = load_catalog()
