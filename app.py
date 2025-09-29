@@ -23,6 +23,11 @@ from db import (
     upsert_user, get_user, list_users,
     save_lavado, get_lavados_week, delete_lavado, photo_hashes_all
 )
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=r".*use_column_width parameter has been deprecated.*"
+)
 
 # ======================= Branding / Estilos =======================
 
@@ -700,6 +705,7 @@ def main():
             file_name=f"reporte-{WEEK_CUR}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+        
 
         cA, cB = st.columns(2)
         with cA:
