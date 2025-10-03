@@ -1,6 +1,6 @@
 # app.py — Lavados Semanales (Streamlit)
 # --------------------------------------
-# - Login con roles (admin / supervisor)
+# - Login con roles (admin / supervisor) contra BD
 # - Supervisores capturan lavados con 4 fotos obligatorias (frente, atrás, lado, cabina)
 # - Detección de fotos repetidas por hash SHA-256 (global, consultando la BD)
 # - Catálogos desde ./data/*.json
@@ -17,17 +17,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
-# Funciones de la capa de datos (tu db.py debe exponer estas):
+# Capa de datos (tu db.py debe exponer estas funciones)
 from db import (
     init_db, healthcheck,
     upsert_user, get_user, list_users,
     save_lavado, get_lavados_week, delete_lavado, photo_hashes_all
 )
+
+# Silenciar warning viejo de use_column_width
 import warnings
-warnings.filterwarnings(
-    "ignore",
-    message=r".*use_column_width parameter has been deprecated.*"
-)
+warnings.filterwarnings("ignore", message=r".*use_column_width parameter has been deprecated.*")
 
 # ======================= Branding / Estilos =======================
 
@@ -84,9 +83,9 @@ def boot_guard(fn):
 
 # ========================= Utilidades base =======================
 
-BASE_DIR    = os.getenv("DATA_DIR", "store")       # raíz de datos (archivos)
-EVIDENCE_DIR= os.path.join(BASE_DIR, "evidence")
-WEEKS_DIR   = os.path.join(BASE_DIR, "semanas")
+BASE_DIR     = os.getenv("DATA_DIR", "store")       # raíz de datos (archivos)
+EVIDENCE_DIR = os.path.join(BASE_DIR, "evidence")
+WEEKS_DIR    = os.path.join(BASE_DIR, "semanas")
 
 def norm(s: Any) -> str:
     import unicodedata
@@ -182,31 +181,21 @@ CONFIG: Dict[str, Any] = {
         {"id": "La Cruz", "nombre": "La Cruz"},
     ],
     "supervisores": [
-         # Tecnicos
         {"id": "sup-lorem-salazar", "nombre": "Loren Salazar", "cedis": "Tecnicos"},
-        # TRANSPORTADORA
         {"id": "sup-ronny-garita", "nombre": "Ronny Garita", "cedis": "Transportadora"},
-        # CARTAGO
         {"id": "sup-miguel-gomez",  "nombre": "Miguel Gomez",  "cedis": "cartago",  "segmento": "hinos"},
         {"id": "sup-erick-valerin", "nombre": "Erick Valerin", "cedis": "cartago",  "segmento": "graneles"},
-        # GUÁPILES
         {"id": "sup-enrique-herrera","nombre": "Enrique Herrera","cedis": "guapiles"},
         {"id": "sup-raul-retana",   "nombre": "Raul Retana",   "cedis": "guapiles", "segmento": "hinos"},
-        # PÉREZ ZELEDÓN
         {"id": "sup-adrian-veita",  "nombre": "Adrian Veita",  "cedis": "Perez Zeledon"},
         {"id": "sup-luis-solis",    "nombre": "Luis Solis",    "cedis": "Perez Zeledon"},
-        # LA CRUZ
         {"id": "sup-daniel-salas",  "nombre": "Daniel Salas",  "cedis": "La Cruz"},
         {"id": "sup-roberto-chirino","nombre": "Roberto Chirino","cedis": "La Cruz"},
-        # ALAJUELA
         {"id": "sup-cristian-bolanos","nombre":"Cristian Bolaños","cedis":"alajuela","segmento":"graneles"},
         {"id": "sup-roberto-vargas",  "nombre":"Roberto Vargas",  "cedis":"alajuela","segmento":"hinos"},
-        # SAN CARLOS
         {"id": "sup-cristofer-carranza","nombre":"Cristofer Carranza","cedis":"San Carlos"},
-        # RÍO CLARO
-        {"id": "sup-victor-cordero", "nombre": "Victor Cordero", "cedis": "Rio Claro"},
-        # NICOYA
-        {"id": "sup-luis-rivas",    "nombre": "Luis Rivas",    "cedis": "Nicoya"},
+        {"id": "sup-victor-cordero", "nombre":"Victor Cordero","cedis":"Rio Claro"},
+        {"id": "sup-luis-rivas",    "nombre":"Luis Rivas","cedis":"Nicoya"},
     ],
     "asignaciones": [
         # ejemplo: {"supervisorId": "sup-miguel-gomez", "unidadId": "C170135"},
@@ -310,7 +299,7 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
             "Nombre":  [u.get("name","") for u in users],
             "Rol":     [u.get("role","") for u in users],
             "Supervisor ID": [u.get("supervisor_id","") for u in users],
-        }, width="stretch")
+        }, use_container_width=True)
     else:
         st.info("No hay usuarios.")
 
@@ -613,7 +602,7 @@ def main():
             for i,(k,_) in enumerate(FOTO_SLOTS):
                 p = (r.get("fotos") or {}).get(k)
                 if p and os.path.exists(p):
-                    gcols[i].image(p, use_column_width=True)
+                    gcols[i].image(p, use_container_width=True)  # reemplaza use_column_width
                 else:
                     gcols[i].write("—")
             cols[5].write(r["ts"])
@@ -643,7 +632,7 @@ def main():
                 st.dataframe({
                     "Unidad": [u["id"] for u in data],
                     "Segmento": [u["segmento"] for u in data]
-                }, width="stretch")
+                }, use_container_width=True)
             else:
                 st.success("¡Al día!")
 
@@ -705,7 +694,6 @@ def main():
             file_name=f"reporte-{WEEK_CUR}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        
 
         cA, cB = st.columns(2)
         with cA:
@@ -719,7 +707,7 @@ def main():
                     "Unidad": [r["unidadLabel"] for r in lav],
                     "Fecha": [r["ts"] for r in lav],
                     "Capturado por": [r.get("created_by","") for r in lav],
-                }, width="stretch")
+                }, use_container_width=True)
             csv_lav = csv_bytes(
                 [["week","cedis","supervisor","segmento","unidadId","timestamp","created_by"], *[[
                     WEEK_CUR, r["cedis"], r["supervisorNombre"], r["segmento"], r["unidadLabel"], r["ts"], r.get("created_by","")
@@ -735,7 +723,7 @@ def main():
                     "CEDIS": [cedis_labels.get(u["cedis"], u["cedis"]) for u in nolav],
                     "Segmento": [u["segmento"] for u in nolav],
                     "Unidad": [u["id"] for u in nolav],
-                }, width="stretch")
+                }, use_container_width=True)
             csv_nolav = csv_bytes(
                 [["week","cedis","segmento","unidadId"], *[[
                     WEEK_CUR, u["cedis"], u["segmento"], u["id"]
