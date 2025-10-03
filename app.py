@@ -28,6 +28,102 @@ from db import (
 import warnings
 warnings.filterwarnings("ignore", message=r".*use_column_width parameter has been deprecated.*")
 
+def kpis_y_graficos(CATALOGO, reg_semana, sup_by_id, cedis_labels, week_key, cedis_filtro=None):
+    """
+    Muestra KPIs y gráficos:
+      - Lavados por supervisor (cuenta)
+      - Pendientes por supervisor (estimado con catálogo y segmento del supervisor)
+    """
+    import pandas as pd
+
+    # DataFrame de lavados de la semana
+    df = pd.DataFrame(reg_semana)
+    if df.empty:
+        st.info("No hay datos para graficar en esta semana.")
+        return
+
+    # Normalizaciones útiles
+    df["supervisorNombre"] = df["supervisorNombre"].fillna("")
+    df["cedis"] = df["cedis"].fillna("")
+    df["unidadId"] = df["unidadId"].fillna("")
+    df["segmento"] = df["segmento"].fillna("")
+
+    # Filtro opcional por CEDIS para los gráficos
+    if cedis_filtro:
+        df = df[df["cedis"] == cedis_filtro]
+        catalogo = [u for u in CATALOGO if u["cedis"] == cedis_filtro]
+        sup_loc = [s for s in sup_by_id.values() if str(s.get("cedis")) == str(cedis_filtro)]
+    else:
+        catalogo = CATALOGO[:]
+        sup_loc = list(sup_by_id.values())
+
+    # ========== KPIs básicos ==========
+    total_lavados = len(df)
+    total_unidades_semana = len({(u["id"], u["cedis"]) for u in catalogo})
+    lavadas_set = {(r["unidadId"], r["cedis"]) for _, r in df.iterrows()}
+    total_no_lavadas = total_unidades_semana - len(lavadas_set)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Lavados (semana)", f"{total_lavados:,}")
+    c2.metric("Unidades esperadas", f"{total_unidades_semana:,}")
+    c3.metric("No lavadas", f"{total_no_lavadas:,}")
+
+    # ========== Gráfico: lavados por supervisor ==========
+    by_sup = df.groupby("supervisorNombre")["id"].count().sort_values(ascending=False).reset_index()
+    by_sup.columns = ["Supervisor", "Lavados"]
+    st.subheader("Lavados por supervisor")
+    st.bar_chart(by_sup.set_index("Supervisor"), use_container_width=True)
+
+    # ========== Estimar pendientes por supervisor ==========
+    # Regla: si el supervisor tiene 'segmento' fijo en CONFIG, su universo esperado = unidades del catálogo en su CEDIS y su segmento.
+    # Si no tiene segmento, universo esperado = TODAS las unidades del catálogo en su CEDIS.
+    pendientes_rows = []
+    lavadas_set = {(r["unidadId"], r["cedis"]) for _, r in df.iterrows()}  # recalco por si hubo filtro
+
+    for sup in sup_loc:
+        s_id = sup["id"]
+        s_name = sup.get("nombre", s_id)
+        s_cedis = sup.get("cedis", "")
+        s_segmento = sup.get("segmento")  # puede ser None
+
+        # Universo esperado del supervisor
+        universo = [u for u in catalogo if u["cedis"] == s_cedis]
+        if s_segmento:
+            universo = [u for u in universo if u["segmento"] == s_segmento]
+
+        # Pendientes = universo - lavadas_set
+        universo_set = {(u["id"], u["cedis"]) for u in universo}
+        pendientes = universo_set - lavadas_set
+        if universo:
+            pendientes_rows.append({
+                "Supervisor": s_name,
+                "Pendientes": len(pendientes),
+                "Esperadas": len(universo),
+                "Cumplimiento%": round(100 * (len(universo) - len(pendientes)) / max(1, len(universo)), 1),
+            })
+
+    if pendientes_rows:
+        df_pen = pd.DataFrame(pendientes_rows).sort_values(["Pendientes","Supervisor"], ascending=[False, True])
+        st.subheader("Pendientes por supervisor")
+        st.bar_chart(df_pen.set_index("Supervisor")["Pendientes"], use_container_width=True)
+
+        with st.expander("Detalle de cumplimiento (%)"):
+            st.dataframe(df_pen.reset_index(drop=True), use_container_width=True)
+
+    # ========== Tabla de “top pendientes” (quiénes no lavaron) ==========
+    # Lista de unidades NO lavadas para el CEDIS (o todos)
+    faltantes = [u for u in catalogo if (u["id"], u["cedis"]) not in lavadas_set]
+    if faltantes:
+        st.subheader("Unidades NO lavadas (detalle)")
+        st.dataframe(
+            pd.DataFrame([{
+                "CEDIS": cedis_labels.get(u["cedis"], u["cedis"]),
+                "Segmento": u["segmento"],
+                "Unidad": u["id"],
+            } for u in faltantes]).sort_values(["CEDIS","Segmento","Unidad"]),
+            use_container_width=True
+        )
+
 # ======================= Branding / Estilos =======================
 
 LOGO_URL = "https://tse1.mm.bing.net/th/id/OIP.QBCt9-dF3e4xLmEw_WVPmQHaCW?rs=1&pid=ImgDetMain&o=7&rm=3"
@@ -635,9 +731,19 @@ def main():
                 }, use_container_width=True)
             else:
                 st.success("¡Al día!")
+                st.markdown("---")
+st.header("Reportes y Gráficos")
 
-    # -------- Panel administrador --------
-    if auth["role"] == "admin":
+# Filtro opcional por CEDIS para los gráficos (reutilizamos el CEDIS ya elegido arriba)
+cedis_opc = ["(Todos)"] + sorted({u["cedis"] for u in CATALOGO})
+cedis_sel = st.selectbox("Filtrar gráficos por CEDIS", options=cedis_opc,
+                         format_func=lambda x: "Todos" if x=="(Todos)" else cedis_labels.get(x, x))
+
+cedis_filter = None if cedis_sel == "(Todos)" else cedis_sel
+kpis_y_graficos(CATALOGO, reg_semana, sup_by_id, cedis_labels, WEEK_CUR, cedis_filter)
+
+# -------- Panel administrador --------
+if auth["role"] == "admin":
         st.markdown("---")
         st.header(f"Panel del administrador — {WEEK_CUR}")
 
