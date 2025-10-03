@@ -744,32 +744,32 @@ kpis_y_graficos(CATALOGO, reg_semana, sup_by_id, cedis_labels, WEEK_CUR, cedis_f
 
 # -------- Panel administrador --------
 if auth["role"] == "admin":
-        st.markdown("---")
-        st.header(f"Panel del administrador — {WEEK_CUR}")
+    st.markdown("---")
+    st.header(f"Panel del administrador — {WEEK_CUR}")
 
-        c1, c2, c3, c4 = st.columns([1,1,1,2])
-        with c1:
-            admin_cedis = st.selectbox(
-                "CEDIS",
-                options=["all"] + [c["id"] for c in CONFIG["cedis"]],
-                format_func=lambda x: "Todos" if x=="all" else cedis_labels.get(x, x),
-            )
-        with c2:
-            admin_seg = st.selectbox(
-                "Segmento",
-                options=["all"] + [s["id"] for s in CONFIG["segmentos"]],
-                format_func=lambda x: "Todos" if x=="all" else next(s["nombre"] for s in CONFIG["segmentos"] if s["id"]==x),
-            )
-        with c3:
-            sup_all = CONFIG["supervisores"] if admin_cedis=="all" else [s for s in CONFIG["supervisores"] if norm(s["cedis"])==norm(admin_cedis)]
-            sup_map_all = {s["id"]: s for s in sup_all}
-            admin_sup = st.selectbox(
-                "Supervisor",
-                options=["all"] + [s["id"] for s in sup_all],
-                format_func=lambda x: "Todos" if x=="all" else sup_map_all.get(x,{}).get("nombre",""),
-            )
-        with c4:
-            admin_q = st.text_input("Buscar (unidad o supervisor)")
+    c1, c2, c3, c4 = st.columns([1,1,1,2])
+    with c1:
+        admin_cedis = st.selectbox(
+            "CEDIS",
+            options=["all"] + [c["id"] for c in CONFIG["cedis"]],
+            format_func=lambda x: "Todos" if x=="all" else cedis_labels.get(x, x),
+        )
+    with c2:
+        admin_seg = st.selectbox(
+            "Segmento",
+            options=["all"] + [s["id"] for s in CONFIG["segmentos"]],
+            format_func=lambda x: "Todos" if x=="all" else next(s["nombre"] for s in CONFIG["segmentos"] if s["id"]==x),
+        )
+    with c3:
+        sup_all = CONFIG["supervisores"] if admin_cedis=="all" else [s for s in CONFIG["supervisores"] if norm(s["cedis"])==norm(admin_cedis)]
+        sup_map_all = {s["id"]: s for s in sup_all}
+        admin_sup = st.selectbox(
+            "Supervisor",
+            options=["all"] + [s["id"] for s in sup_all],
+            format_func=lambda x: "Todos" if x=="all" else sup_map_all.get(x,{}).get("nombre",""),
+        )
+    with c4:
+        admin_q = st.text_input("Buscar (unidad o supervisor)")
 
         # Filtros sobre catálogo y registros
         pool = CATALOGO[:]
