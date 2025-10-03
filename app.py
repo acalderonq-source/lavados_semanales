@@ -1,12 +1,13 @@
 # app.py — Lavados Semanales (Streamlit)
 # --------------------------------------
-# - Login con roles (admin / supervisor) contra BD
-# - Supervisores capturan lavados con 4 fotos obligatorias (frente, atrás, lado, cabina)
-# - Detección de fotos repetidas por hash SHA-256 (global, consultando la BD)
+# - Login con roles (admin / supervisor) contra BD MySQL (Railway)
+# - Supervisores capturan lavados con 4 fotos (frente, atrás, lado, cabina)
+# - Bloqueo de fotos repetidas por hash SHA-256 (global, consultando BD)
 # - Catálogos desde ./data/*.json
 # - Export CSV/XLSX y export a carpetas por semana
-# - Admin NO puede capturar ni borrar; solo ver, exportar y gestionar usuarios
-# - Boot-guard: muestra errores en pantalla (evita "pantalla negra")
+# - Admin NO captura ni borra; solo ver/exportar/gestionar usuarios
+# - Reportes y gráficos (KPIs + barras por CEDIS / supervisor)
+# - Boot-guard: muestra errores en pantalla
 
 from __future__ import annotations
 
@@ -17,112 +18,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
-# Capa de datos (tu db.py debe exponer estas funciones)
+# Capa de datos (asegúrate que db.py exista y exporte estas funciones)
 from db import (
     init_db, healthcheck,
     upsert_user, get_user, list_users,
     save_lavado, get_lavados_week, delete_lavado, photo_hashes_all
 )
-
-# Silenciar warning viejo de use_column_width
-import warnings
-warnings.filterwarnings("ignore", message=r".*use_column_width parameter has been deprecated.*")
-
-def kpis_y_graficos(CATALOGO, reg_semana, sup_by_id, cedis_labels, week_key, cedis_filtro=None):
-    """
-    Muestra KPIs y gráficos:
-      - Lavados por supervisor (cuenta)
-      - Pendientes por supervisor (estimado con catálogo y segmento del supervisor)
-    """
-    import pandas as pd
-
-    # DataFrame de lavados de la semana
-    df = pd.DataFrame(reg_semana)
-    if df.empty:
-        st.info("No hay datos para graficar en esta semana.")
-        return
-
-    # Normalizaciones útiles
-    df["supervisorNombre"] = df["supervisorNombre"].fillna("")
-    df["cedis"] = df["cedis"].fillna("")
-    df["unidadId"] = df["unidadId"].fillna("")
-    df["segmento"] = df["segmento"].fillna("")
-
-    # Filtro opcional por CEDIS para los gráficos
-    if cedis_filtro:
-        df = df[df["cedis"] == cedis_filtro]
-        catalogo = [u for u in CATALOGO if u["cedis"] == cedis_filtro]
-        sup_loc = [s for s in sup_by_id.values() if str(s.get("cedis")) == str(cedis_filtro)]
-    else:
-        catalogo = CATALOGO[:]
-        sup_loc = list(sup_by_id.values())
-
-    # ========== KPIs básicos ==========
-    total_lavados = len(df)
-    total_unidades_semana = len({(u["id"], u["cedis"]) for u in catalogo})
-    lavadas_set = {(r["unidadId"], r["cedis"]) for _, r in df.iterrows()}
-    total_no_lavadas = total_unidades_semana - len(lavadas_set)
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Lavados (semana)", f"{total_lavados:,}")
-    c2.metric("Unidades esperadas", f"{total_unidades_semana:,}")
-    c3.metric("No lavadas", f"{total_no_lavadas:,}")
-
-    # ========== Gráfico: lavados por supervisor ==========
-    by_sup = df.groupby("supervisorNombre")["id"].count().sort_values(ascending=False).reset_index()
-    by_sup.columns = ["Supervisor", "Lavados"]
-    st.subheader("Lavados por supervisor")
-    st.bar_chart(by_sup.set_index("Supervisor"), use_container_width=True)
-
-    # ========== Estimar pendientes por supervisor ==========
-    # Regla: si el supervisor tiene 'segmento' fijo en CONFIG, su universo esperado = unidades del catálogo en su CEDIS y su segmento.
-    # Si no tiene segmento, universo esperado = TODAS las unidades del catálogo en su CEDIS.
-    pendientes_rows = []
-    lavadas_set = {(r["unidadId"], r["cedis"]) for _, r in df.iterrows()}  # recalco por si hubo filtro
-
-    for sup in sup_loc:
-        s_id = sup["id"]
-        s_name = sup.get("nombre", s_id)
-        s_cedis = sup.get("cedis", "")
-        s_segmento = sup.get("segmento")  # puede ser None
-
-        # Universo esperado del supervisor
-        universo = [u for u in catalogo if u["cedis"] == s_cedis]
-        if s_segmento:
-            universo = [u for u in universo if u["segmento"] == s_segmento]
-
-        # Pendientes = universo - lavadas_set
-        universo_set = {(u["id"], u["cedis"]) for u in universo}
-        pendientes = universo_set - lavadas_set
-        if universo:
-            pendientes_rows.append({
-                "Supervisor": s_name,
-                "Pendientes": len(pendientes),
-                "Esperadas": len(universo),
-                "Cumplimiento%": round(100 * (len(universo) - len(pendientes)) / max(1, len(universo)), 1),
-            })
-
-    if pendientes_rows:
-        df_pen = pd.DataFrame(pendientes_rows).sort_values(["Pendientes","Supervisor"], ascending=[False, True])
-        st.subheader("Pendientes por supervisor")
-        st.bar_chart(df_pen.set_index("Supervisor")["Pendientes"], use_container_width=True)
-
-        with st.expander("Detalle de cumplimiento (%)"):
-            st.dataframe(df_pen.reset_index(drop=True), use_container_width=True)
-
-    # ========== Tabla de “top pendientes” (quiénes no lavaron) ==========
-    # Lista de unidades NO lavadas para el CEDIS (o todos)
-    faltantes = [u for u in catalogo if (u["id"], u["cedis"]) not in lavadas_set]
-    if faltantes:
-        st.subheader("Unidades NO lavadas (detalle)")
-        st.dataframe(
-            pd.DataFrame([{
-                "CEDIS": cedis_labels.get(u["cedis"], u["cedis"]),
-                "Segmento": u["segmento"],
-                "Unidad": u["id"],
-            } for u in faltantes]).sort_values(["CEDIS","Segmento","Unidad"]),
-            use_container_width=True
-        )
 
 # ======================= Branding / Estilos =======================
 
@@ -179,7 +80,7 @@ def boot_guard(fn):
 
 # ========================= Utilidades base =======================
 
-BASE_DIR     = os.getenv("DATA_DIR", "store")       # raíz de datos (archivos)
+BASE_DIR     = os.getenv("DATA_DIR", "store")   # raíz de datos (archivos)
 EVIDENCE_DIR = os.path.join(BASE_DIR, "evidence")
 WEEKS_DIR    = os.path.join(BASE_DIR, "semanas")
 
@@ -269,7 +170,7 @@ CONFIG: Dict[str, Any] = {
         {"id": "alajuela", "nombre": "Alajuela"},
         {"id": "guapiles", "nombre": "Guápiles"},
         {"id": "Transportadora", "nombre": "Transportadora"},
-        {"id": "Tecnicos", "nombre": "tecnicos"},
+        {"id": "Tecnicos", "nombre": "Tecnicos"},
         {"id": "San Carlos", "nombre": "San Carlos"},
         {"id": "Rio Claro", "nombre": "Rio Claro"},
         {"id": "Perez Zeledon", "nombre": "Perez Zeledon"},
@@ -279,8 +180,8 @@ CONFIG: Dict[str, Any] = {
     "supervisores": [
         {"id": "sup-lorem-salazar", "nombre": "Loren Salazar", "cedis": "Tecnicos"},
         {"id": "sup-ronny-garita", "nombre": "Ronny Garita", "cedis": "Transportadora"},
-        {"id": "sup-miguel-gomez",  "nombre": "Miguel Gomez",  "cedis": "cartago",  "segmento": "hinos"},
-        {"id": "sup-erick-valerin", "nombre": "Erick Valerin", "cedis": "cartago",  "segmento": "graneles"},
+        {"id": "sup-miguel-gomez", "nombre": "Miguel Gomez", "cedis": "cartago",  "segmento": "hinos"},
+        {"id": "sup-erick-valerin","nombre": "Erick Valerin","cedis": "cartago",  "segmento": "graneles"},
         {"id": "sup-enrique-herrera","nombre": "Enrique Herrera","cedis": "guapiles"},
         {"id": "sup-raul-retana",   "nombre": "Raul Retana",   "cedis": "guapiles", "segmento": "hinos"},
         {"id": "sup-adrian-veita",  "nombre": "Adrian Veita",  "cedis": "Perez Zeledon"},
@@ -290,8 +191,8 @@ CONFIG: Dict[str, Any] = {
         {"id": "sup-cristian-bolanos","nombre":"Cristian Bolaños","cedis":"alajuela","segmento":"graneles"},
         {"id": "sup-roberto-vargas",  "nombre":"Roberto Vargas",  "cedis":"alajuela","segmento":"hinos"},
         {"id": "sup-cristofer-carranza","nombre":"Cristofer Carranza","cedis":"San Carlos"},
-        {"id": "sup-victor-cordero", "nombre":"Victor Cordero","cedis":"Rio Claro"},
-        {"id": "sup-luis-rivas",    "nombre":"Luis Rivas","cedis":"Nicoya"},
+        {"id": "sup-victor-cordero", "nombre":"Victor Cordero", "cedis": "Rio Claro"},
+        {"id": "sup-luis-rivas",     "nombre":"Luis Rivas",     "cedis": "Nicoya"},
     ],
     "asignaciones": [
         # ejemplo: {"supervisorId": "sup-miguel-gomez", "unidadId": "C170135"},
@@ -362,10 +263,9 @@ def require_login() -> Dict[str, Any]:
         password = st.text_input("Contraseña", type="password")
 
     if st.button("Entrar"):
-        u = get_user(username)  # desde BD
+        u = get_user(username)  # DB
         if not u:
             st.error("Usuario o contraseña incorrectos."); st.stop()
-
         pwd_ok = (u.get("sha256") == hashlib.sha256(password.encode("utf-8")).hexdigest())
         if not pwd_ok:
             st.error("Usuario o contraseña incorrectos."); st.stop()
@@ -383,7 +283,7 @@ def require_login() -> Dict[str, Any]:
 
 def admin_user_manager(cedis_labels: Dict[str, str]):
     st.header("Gestión de usuarios")
-    users = list_users()  # desde BD
+    users = list_users()  # DB
 
     sup_opts = {s["id"]: f'{s["nombre"]} · {cedis_labels.get(s["cedis"], s["cedis"])}'
                 for s in CONFIG["supervisores"]}
@@ -395,7 +295,7 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
             "Nombre":  [u.get("name","") for u in users],
             "Rol":     [u.get("role","") for u in users],
             "Supervisor ID": [u.get("supervisor_id","") for u in users],
-        }, use_container_width=True)
+        }, width="stretch")
     else:
         st.info("No hay usuarios.")
 
@@ -434,7 +334,7 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
                 "sha256": hashlib.sha256(password.encode("utf-8")).hexdigest(),
                 "supervisor_id": sup_id if role == "supervisor" else None,
             }
-            upsert_user(new_user)  # guarda en BD
+            upsert_user(new_user)  # DB
             st.success(f"Usuario '{username}' creado.")
             st.rerun()
 
@@ -512,6 +412,86 @@ def delete_week_everywhere(week: str, registros_semana: List[Dict[str, Any]]):
             pass
     shutil.rmtree(os.path.join(EVIDENCE_DIR, week), ignore_errors=True)
     shutil.rmtree(os.path.join(WEEKS_DIR, week), ignore_errors=True)
+
+# ============================ Reportes & Gráficos ========================
+
+def kpis_y_graficos(
+    CATALOGO: List[Dict[str, Any]],
+    reg_semana: List[Dict[str, Any]],
+    sup_by_id: Dict[str, Dict[str, Any]],
+    cedis_labels: Dict[str, str],
+    week_key: str,
+    cedis_filtro: Optional[str] = None
+):
+    st.subheader("Reportes y Gráficos")
+
+    # Filtrar por CEDIS si aplica
+    if cedis_filtro:
+        catalog_fil = [u for u in CATALOGO if u["cedis"] == cedis_filtro]
+        regs_fil    = [r for r in reg_semana if r["cedis"] == cedis_filtro]
+    else:
+        catalog_fil = CATALOGO[:]
+        regs_fil    = reg_semana[:]
+
+    total_unidades = len({(u["id"], u["cedis"]) for u in catalog_fil})
+    lavadas_set = {(r["unidadId"], r["cedis"]) for r in regs_fil}
+    total_lavadas = len(lavadas_set)
+    total_no_lav = total_unidades - total_lavadas
+    pct = (total_lavadas / total_unidades * 100.0) if total_unidades else 0.0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Unidades totales", total_unidades)
+    c2.metric("Lavadas", total_lavadas)
+    c3.metric("No lavadas", total_no_lav)
+    c4.metric("Cumplimiento (%)", f"{pct:.1f}%")
+
+    # --- Barras por CEDIS ---
+    st.markdown("**Lavadas por CEDIS**")
+    df_cedis = pd.DataFrame([{"cedis": r["cedis"]} for r in regs_fil]).value_counts().reset_index(name="lavadas")
+    if not df_cedis.empty:
+        df_cedis["CEDIS"] = df_cedis["cedis"].map(lambda x: cedis_labels.get(x, x))
+        df_cedis = df_cedis.sort_values("lavadas", ascending=False)
+        st.bar_chart(data=df_cedis.set_index("CEDIS")["lavadas"], use_container_width=True)
+    else:
+        st.info("Sin lavados registrados para el filtro seleccionado.")
+
+    # --- Barras por Supervisor (lavadas) ---
+    st.markdown("**Lavadas por Supervisor**")
+    df_sup = pd.DataFrame([{"sup": r.get("supervisorNombre","(sin supervisor)")} for r in regs_fil]) \
+                .value_counts().reset_index(name="lavadas")
+    if not df_sup.empty:
+        df_sup = df_sup.rename(columns={"sup":"Supervisor"}).sort_values("lavadas", ascending=False)
+        st.bar_chart(data=df_sup.set_index("Supervisor")["lavadas"], use_container_width=True)
+    else:
+        st.info("Sin lavados por supervisor para el filtro seleccionado.")
+
+    # --- Faltantes por Supervisor (estimación por segmento/cedis) ---
+    st.markdown("**Faltantes estimados por Supervisor**")
+    # Definimos unidades "esperadas" por supervisor según CEDIS (y segmento si supervisor lo tiene fijo)
+    filas = []
+    for sup in sup_by_id.values():
+        if cedis_filtro and norm(sup.get("cedis","")) != norm(cedis_filtro):
+            continue
+        sup_cedis = sup.get("cedis","")
+        sup_seg   = sup.get("segmento")  # opcional
+        cat_sup = [u for u in catalog_fil if u["cedis"] == sup_cedis]
+        if sup_seg:
+            cat_sup = [u for u in cat_sup if u["segmento"] == sup_seg]
+        total_esp = len(cat_sup)
+        lavadas_sup = len([1 for r in regs_fil if r.get("supervisorId")==sup.get("id")])
+        faltantes   = max(total_esp - lavadas_sup, 0)
+        filas.append({
+            "Supervisor": sup.get("nombre", sup.get("id","")),
+            "Esperadas": total_esp,
+            "Lavadas": lavadas_sup,
+            "Faltantes": faltantes
+        })
+    df_falt = pd.DataFrame(filas)
+    if not df_falt.empty:
+        st.dataframe(df_falt.sort_values("Faltantes", ascending=False), use_container_width=True)
+        st.bar_chart(data=df_falt.set_index("Supervisor")["Faltantes"], use_container_width=True)
+    else:
+        st.info("No hay datos suficientes para estimar faltantes por supervisor.")
 
 # =============================== App ===============================
 
@@ -681,7 +661,7 @@ def main():
     # -------- Tabla de registros --------
     WEEK_CUR = iso_week_key(fecha_sel)
     st.subheader(f"Registros — {WEEK_CUR}")
-    reg_semana = get_lavados_week(WEEK_CUR)  # desde BD
+    reg_semana = get_lavados_week(WEEK_CUR)  # BD
     if auth["role"] == "supervisor":
         reg_semana = [r for r in reg_semana if r["supervisorId"] == auth.get("supervisorId")]
 
@@ -698,7 +678,7 @@ def main():
             for i,(k,_) in enumerate(FOTO_SLOTS):
                 p = (r.get("fotos") or {}).get(k)
                 if p and os.path.exists(p):
-                    gcols[i].image(p, use_container_width=True)  # reemplaza use_column_width
+                    gcols[i].image(p, use_container_width=True)
                 else:
                     gcols[i].write("—")
             cols[5].write(r["ts"])
@@ -731,45 +711,35 @@ def main():
                 }, use_container_width=True)
             else:
                 st.success("¡Al día!")
-                st.markdown("---")
-st.header("Reportes y Gráficos")
 
-# Filtro opcional por CEDIS para los gráficos (reutilizamos el CEDIS ya elegido arriba)
-cedis_opc = ["(Todos)"] + sorted({u["cedis"] for u in CATALOGO})
-cedis_sel = st.selectbox("Filtrar gráficos por CEDIS", options=cedis_opc,
-                         format_func=lambda x: "Todos" if x=="(Todos)" else cedis_labels.get(x, x))
+    # -------- Panel administrador --------
+    if auth["role"] == "admin":
+        st.markdown("---")
+        st.header(f"Panel del administrador — {WEEK_CUR}")
 
-cedis_filter = None if cedis_sel == "(Todos)" else cedis_sel
-kpis_y_graficos(CATALOGO, reg_semana, sup_by_id, cedis_labels, WEEK_CUR, cedis_filter)
-
-# -------- Panel administrador --------
-if auth["role"] == "admin":
-    st.markdown("---")
-    st.header(f"Panel del administrador — {WEEK_CUR}")
-
-    c1, c2, c3, c4 = st.columns([1,1,1,2])
-    with c1:
-        admin_cedis = st.selectbox(
-            "CEDIS",
-            options=["all"] + [c["id"] for c in CONFIG["cedis"]],
-            format_func=lambda x: "Todos" if x=="all" else cedis_labels.get(x, x),
-        )
-    with c2:
-        admin_seg = st.selectbox(
-            "Segmento",
-            options=["all"] + [s["id"] for s in CONFIG["segmentos"]],
-            format_func=lambda x: "Todos" if x=="all" else next(s["nombre"] for s in CONFIG["segmentos"] if s["id"]==x),
-        )
-    with c3:
-        sup_all = CONFIG["supervisores"] if admin_cedis=="all" else [s for s in CONFIG["supervisores"] if norm(s["cedis"])==norm(admin_cedis)]
-        sup_map_all = {s["id"]: s for s in sup_all}
-        admin_sup = st.selectbox(
-            "Supervisor",
-            options=["all"] + [s["id"] for s in sup_all],
-            format_func=lambda x: "Todos" if x=="all" else sup_map_all.get(x,{}).get("nombre",""),
-        )
-    with c4:
-        admin_q = st.text_input("Buscar (unidad o supervisor)")
+        c1, c2, c3, c4 = st.columns([1,1,1,2])
+        with c1:
+            admin_cedis = st.selectbox(
+                "CEDIS",
+                options=["all"] + [c["id"] for c in CONFIG["cedis"]],
+                format_func=lambda x: "Todos" if x=="all" else cedis_labels.get(x, x),
+            )
+        with c2:
+            admin_seg = st.selectbox(
+                "Segmento",
+                options=["all"] + [s["id"] for s in CONFIG["segmentos"]],
+                format_func=lambda x: "Todos" if x=="all" else next(s["nombre"] for s in CONFIG["segmentos"] if s["id"]==x),
+            )
+        with c3:
+            sup_all = CONFIG["supervisores"] if admin_cedis=="all" else [s for s in CONFIG["supervisores"] if norm(s["cedis"])==norm(admin_cedis)]
+            sup_map_all = {s["id"]: s for s in sup_all}
+            admin_sup = st.selectbox(
+                "Supervisor",
+                options=["all"] + [s["id"] for s in sup_all],
+                format_func=lambda x: "Todos" if x=="all" else sup_map_all.get(x,{}).get("nombre",""),
+            )
+        with c4:
+            admin_q = st.text_input("Buscar (unidad o supervisor)")
 
         # Filtros sobre catálogo y registros
         pool = CATALOGO[:]
@@ -853,6 +823,25 @@ if auth["role"] == "admin":
 
         st.markdown("---")
         admin_user_manager(cedis_labels)
+
+    # -------- Reportes y gráficos globales (al final de main) --------
+    st.markdown("---")
+    st.header("Reportes y Gráficos")
+    cedis_opc = ["(Todos)"] + sorted({u["cedis"] for u in CATALOGO})
+    cedis_sel = st.selectbox(
+        "Filtrar gráficos por CEDIS",
+        options=cedis_opc,
+        format_func=lambda x: "Todos" if x == "(Todos)" else cedis_labels.get(x, x),
+    )
+    cedis_filter = None if cedis_sel == "(Todos)" else cedis_sel
+    kpis_y_graficos(
+        CATALOGO=CATALOGO,
+        reg_semana=reg_semana,
+        sup_by_id=sup_by_id,
+        cedis_labels=cedis_labels,
+        week_key=WEEK_CUR,
+        cedis_filtro=cedis_filter,
+    )
 
 # ---- run ----
 if __name__ == "__main__":
