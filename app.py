@@ -221,6 +221,7 @@ SOURCES: List[str] = [
     "data/unidades-todo.json",
     "data/unidades-transportadora.json",
     "data/unidades-tecnicos.json",
+    "data/unidades-granel-cartago.json",
 ]
 
 def load_catalog() -> List[Dict[str, Any]]:
