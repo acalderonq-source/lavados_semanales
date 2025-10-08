@@ -6,5 +6,8 @@
   { "id": "C164213", "placa": "", "tipo": "Granel", "cedis": "cartago", "segmento": "graneles" },
   { "id": "C165059", "placa": "", "tipo": "Granel", "cedis": "cartago", "segmento": "graneles" },
   { "id": "C181760", "placa": "", "tipo": "Granel", "cedis": "cartago", "segmento": "graneles" },
-  { "id": "164215",  "placa": "", "tipo": "Granel", "cedis": "cartago", "segmento": "graneles" }
+  { "id": "164215",  "placa": "", "tipo": "Granel", "cedis": "cartago", "segmento": "graneles" },
+  { "id": "C165061",  "placa": "", "tipo": "Granel", "cedis": "cartago", "segmento": "graneles" },
+  { "id": "C165061",  "placa": "", "tipo": "Granel", "cedis": "cartago", "segmento": "graneles" },
+  { "id": "170711",  "placa": "", "tipo": "Granel", "cedis": "cartago", "segmento": "graneles" }
 ]
