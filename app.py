@@ -11,18 +11,25 @@
 
 from __future__ import annotations
 
-import os, io, csv, json, uuid, hashlib, shutil, traceback
+import os, io, csv, json, uuid, hashlib, shutil, traceback, warnings
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
+from PIL import Image, ImageOps
 
 # Capa de datos (asegúrate que db.py exista y exporte estas funciones)
 from db import (
     init_db, healthcheck,
     upsert_user, get_user, list_users,
     save_lavado, get_lavados_week, delete_lavado, photo_hashes_all
+)
+
+# (por si alguna lib usa parámetros viejos)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*use_column_width parameter has been deprecated.*"
 )
 
 # ======================= Branding / Estilos =======================
@@ -296,7 +303,7 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
             "Nombre":  [u.get("name","") for u in users],
             "Rol":     [u.get("role","") for u in users],
             "Supervisor ID": [u.get("supervisor_id","") for u in users],
-        }, width="stretch")
+        }, use_container_width=True)
     else:
         st.info("No hay usuarios.")
 
@@ -342,15 +349,26 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
 # ============================= Fotos / Export ===========================
 
 def save_photo(file, subname: str, week: str, cedis: str, unidad_id: str) -> Optional[str]:
+    """Optimiza a JPG 85% y máx. 1600px por lado para evitar subidas lentas."""
     if not file:
         return None
-    ext = os.path.splitext(file.name or "")[1].lower() or ".jpg"
     base = os.path.join(EVIDENCE_DIR, week, safe_slug(cedis), safe_slug(str(unidad_id)))
     os.makedirs(base, exist_ok=True)
-    name = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}_{subname}{ext}"
+    name = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}_{subname}.jpg"
     path = os.path.join(base, name)
+
+    # Lee bytes y resetea el puntero por si luego se reusa
+    raw = file.getvalue() if hasattr(file, "getvalue") else file.read()
+    if hasattr(file, "seek"):
+        file.seek(0)
+
+    img = Image.open(io.BytesIO(raw))
+    img = ImageOps.exif_transpose(img).convert("RGB")
+    img.thumbnail((1600, 1600), Image.LANCZOS)
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=85, optimize=True)
     with open(path, "wb") as f:
-        f.write(file.getbuffer())
+        f.write(out.getvalue())
     return path
 
 def export_week_folders(week: str, catalog: List[Dict[str, Any]], registros_semana: List[Dict[str, Any]], only_cedis: Optional[str] = None):
@@ -446,29 +464,29 @@ def kpis_y_graficos(
     c3.metric("No lavadas", total_no_lav)
     c4.metric("Cumplimiento (%)", f"{pct:.1f}%")
 
-    # --- Barras por CEDIS ---
+    # --- Barras por CEDIS (conteo de lavados) ---
     st.markdown("**Lavadas por CEDIS**")
-    df_cedis = pd.DataFrame([{"cedis": r["cedis"]} for r in regs_fil]).value_counts().reset_index(name="lavadas")
-    if not df_cedis.empty:
+    if regs_fil:
+        df_cedis = pd.DataFrame(regs_fil).groupby("cedis").size().reset_index(name="lavadas")
         df_cedis["CEDIS"] = df_cedis["cedis"].map(lambda x: cedis_labels.get(x, x))
         df_cedis = df_cedis.sort_values("lavadas", ascending=False)
         st.bar_chart(data=df_cedis.set_index("CEDIS")["lavadas"], use_container_width=True)
     else:
         st.info("Sin lavados registrados para el filtro seleccionado.")
 
-    # --- Barras por Supervisor (lavadas) ---
+    # --- Barras por Supervisor (conteo de lavados) ---
     st.markdown("**Lavadas por Supervisor**")
-    df_sup = pd.DataFrame([{"sup": r.get("supervisorNombre","(sin supervisor)")} for r in regs_fil]) \
-                .value_counts().reset_index(name="lavadas")
-    if not df_sup.empty:
-        df_sup = df_sup.rename(columns={"sup":"Supervisor"}).sort_values("lavadas", ascending=False)
+    if regs_fil:
+        df_sup = pd.DataFrame(regs_fil)
+        df_sup["Supervisor"] = df_sup["supervisorNombre"].fillna("(sin supervisor)")
+        df_sup = df_sup.groupby("Supervisor").size().reset_index(name="lavadas") \
+                       .sort_values("lavadas", ascending=False)
         st.bar_chart(data=df_sup.set_index("Supervisor")["lavadas"], use_container_width=True)
     else:
         st.info("Sin lavados por supervisor para el filtro seleccionado.")
 
-    # --- Faltantes por Supervisor (estimación por segmento/cedis) ---
+    # --- Faltantes por Supervisor (estimación por CEDIS/segmento) ---
     st.markdown("**Faltantes estimados por Supervisor**")
-    # Definimos unidades "esperadas" por supervisor según CEDIS (y segmento si supervisor lo tiene fijo)
     filas = []
     for sup in sup_by_id.values():
         if cedis_filtro and norm(sup.get("cedis","")) != norm(cedis_filtro):
@@ -489,7 +507,7 @@ def kpis_y_graficos(
         })
     df_falt = pd.DataFrame(filas)
     if not df_falt.empty:
-        st.dataframe(df_falt.sort_values("Faltantes", ascending=False), use_container_width=True)
+        st.dataframe(df_falt.sort_values("Faltantes", descending=True), use_container_width=True)
         st.bar_chart(data=df_falt.set_index("Supervisor")["Faltantes"], use_container_width=True)
     else:
         st.info("No hay datos suficientes para estimar faltantes por supervisor.")
@@ -620,7 +638,10 @@ def main():
                     hashes_local: Dict[str, str] = {}
                     dup_local = False
                     for k,_ in FOTO_SLOTS:
-                        h = sha256_bytes(uploads[k].getbuffer())
+                        b = uploads[k].getvalue() if hasattr(uploads[k], "getvalue") else uploads[k].read()
+                        if hasattr(uploads[k], "seek"):
+                            uploads[k].seek(0)
+                        h = hashlib.sha256(b).hexdigest()
                         if h in hashes_local.values():
                             dup_local = True
                         hashes_local[k] = h
@@ -635,27 +656,29 @@ def main():
                         st.error(f"Estas fotos ya se usaron antes: {', '.join(repetidas)}.", icon="🚫")
                         st.stop()
 
-                    # guardar fotos en disco
-                    fotos_paths = {k: save_photo(uploads[k], k, WEEK, CEDIS, unidad) for k,_ in FOTO_SLOTS}
+                    with st.spinner("Guardando fotos y registrando..."):
+                        # guardar fotos en disco (optimizadas)
+                        fotos_paths = {k: save_photo(uploads[k], k, WEEK, CEDIS, unidad) for k,_ in FOTO_SLOTS}
 
-                    u = next((x for x in CATALOGO if x["id"] == unidad and x["cedis"] == CEDIS), None)
-                    record = {
-                        "id": uuid.uuid4().hex,
-                        "week": WEEK,
-                        "cedis": CEDIS,
-                        "supervisorId": SUP,
-                        "supervisorNombre": (sup_by_id.get(SUP) or {}).get("nombre",""),
-                        "unidadId": unidad,
-                        "unidadLabel": unidad,
-                        "segmento": (u or {}).get("segmento",""),
-                        "fotos": fotos_paths,
-                        "foto_hashes": hashes_local,
-                        "ts": datetime.now().isoformat(timespec="seconds"),
-                        "created_by": auth["username"],
-                    }
+                        u = next((x for x in CATALOGO if x["id"] == unidad and x["cedis"] == CEDIS), None)
+                        record = {
+                            "id": uuid.uuid4().hex,
+                            "week": WEEK,
+                            "cedis": CEDIS,
+                            "supervisorId": SUP,
+                            "supervisorNombre": (sup_by_id.get(SUP) or {}).get("nombre",""),
+                            "unidadId": unidad,
+                            "unidadLabel": unidad,
+                            "segmento": (u or {}).get("segmento",""),
+                            "fotos": fotos_paths,
+                            "foto_hashes": hashes_local,
+                            "ts": datetime.now().isoformat(timespec="seconds"),
+                            "created_by": auth["username"],
+                        }
 
-                    # guardar en BD
-                    save_lavado(record)
+                        # guardar en BD
+                        save_lavado(record)
+
                     st.success("¡Guardado!")
                     st.rerun()
 
