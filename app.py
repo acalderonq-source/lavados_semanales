@@ -444,18 +444,34 @@ def kpis_y_graficos(
 ):
     st.subheader("Reportes y Gráficos")
 
-    # Filtrar por CEDIS si aplica
-    if cedis_filtro:
-        catalog_fil = [u for u in CATALOGO if u["cedis"] == cedis_filtro]
-        regs_fil    = [r for r in reg_semana if r["cedis"] == cedis_filtro]
-    else:
-        catalog_fil = CATALOGO[:]
-        regs_fil    = reg_semana[:]
+    # DataFrames base (tolerantes a vacío)
+    df_cat = pd.DataFrame(CATALOGO or [])
+    df_reg = pd.DataFrame(reg_semana or [])
 
-    total_unidades = len({(u["id"], u["cedis"]) for u in catalog_fil})
-    lavadas_set = {(r["unidadId"], r["cedis"]) for r in regs_fil}
-    total_lavadas = len(lavadas_set)
-    total_no_lav = total_unidades - total_lavadas
+    # Filtros por CEDIS (si aplica)
+    if cedis_filtro:
+        if not df_cat.empty and "cedis" in df_cat:
+            df_cat = df_cat[df_cat["cedis"] == cedis_filtro]
+        if not df_reg.empty and "cedis" in df_reg:
+            df_reg = df_reg[df_reg["cedis"] == cedis_filtro]
+
+    # ================= KPIs =================
+    # Total unidades (por (id, cedis) únicos)
+    if df_cat.empty or not set(["id","cedis"]).issubset(df_cat.columns):
+        total_unidades = 0
+    else:
+        total_unidades = df_cat[["id","cedis"]].drop_duplicates().shape[0]
+
+    # Lavadas únicas en la semana (por (unidadId, cedis))
+    if df_reg.empty or not set(["unidadId","cedis"]).issubset(df_reg.columns):
+        total_lavadas = 0
+        lavadas_set = set()
+    else:
+        df_lav_pairs = df_reg[["unidadId","cedis"]].dropna()
+        lavadas_set = set(map(tuple, df_lav_pairs.values.tolist()))
+        total_lavadas = len(lavadas_set)
+
+    total_no_lav = max(total_unidades - total_lavadas, 0)
     pct = (total_lavadas / total_unidades * 100.0) if total_unidades else 0.0
 
     c1, c2, c3, c4 = st.columns(4)
@@ -464,53 +480,92 @@ def kpis_y_graficos(
     c3.metric("No lavadas", total_no_lav)
     c4.metric("Cumplimiento (%)", f"{pct:.1f}%")
 
-    # --- Barras por CEDIS (conteo de lavados) ---
+    # ================= Barras por CEDIS =================
     st.markdown("**Lavadas por CEDIS**")
-    if regs_fil:
-        df_cedis = pd.DataFrame(regs_fil).groupby("cedis").size().reset_index(name="lavadas")
-        df_cedis["CEDIS"] = df_cedis["cedis"].map(lambda x: cedis_labels.get(x, x))
-        df_cedis = df_cedis.sort_values("lavadas", ascending=False)
-        st.bar_chart(data=df_cedis.set_index("CEDIS")["lavadas"], use_container_width=True)
-    else:
-        st.info("Sin lavados registrados para el filtro seleccionado.")
+    try:
+        if not df_reg.empty and "cedis" in df_reg.columns:
+            df_cedis = df_reg.groupby("cedis", dropna=False).size().reset_index(name="lavadas")
+            if not df_cedis.empty:
+                df_cedis["CEDIS"] = df_cedis["cedis"].map(lambda x: cedis_labels.get(x, x))
+                df_cedis = df_cedis.sort_values("lavadas", ascending=False)
+                st.bar_chart(df_cedis.set_index("CEDIS")["lavadas"], use_container_width=True)
+            else:
+                st.info("Sin lavados registrados para el filtro seleccionado.")
+        else:
+            st.info("Sin lavados registrados para el filtro seleccionado.")
+    except Exception as e:
+        st.warning(f"No se pudo generar el gráfico por CEDIS: {e}")
 
-    # --- Barras por Supervisor (conteo de lavados) ---
+    # ================= Barras por Supervisor =================
     st.markdown("**Lavadas por Supervisor**")
-    if regs_fil:
-        df_sup = pd.DataFrame(regs_fil)
-        df_sup["Supervisor"] = df_sup["supervisorNombre"].fillna("(sin supervisor)")
-        df_sup = df_sup.groupby("Supervisor").size().reset_index(name="lavadas") \
-                       .sort_values("lavadas", ascending=False)
-        st.bar_chart(data=df_sup.set_index("Supervisor")["lavadas"], use_container_width=True)
-    else:
-        st.info("Sin lavados por supervisor para el filtro seleccionado.")
+    try:
+        if not df_reg.empty:
+            # Supervisor puede venir vacío -> “(sin supervisor)”
+            df_sup = (
+                df_reg
+                .assign(Supervisor=df_reg.get("supervisorNombre", pd.Series(dtype=str)).fillna("(sin supervisor)"))
+                .groupby("Supervisor", dropna=False)
+                .size()
+                .reset_index(name="lavadas")
+                .sort_values("lavadas", ascending=False)
+            )
+            if not df_sup.empty:
+                st.bar_chart(df_sup.set_index("Supervisor")["lavadas"], use_container_width=True)
+            else:
+                st.info("Sin lavados por supervisor para el filtro seleccionado.")
+        else:
+            st.info("Sin lavados por supervisor para el filtro seleccionado.")
+    except Exception as e:
+        st.warning(f"No se pudo generar el gráfico por Supervisor: {e}")
 
-    # --- Faltantes por Supervisor (estimación por CEDIS/segmento) ---
+    # ================= Faltantes por Supervisor (estimación) =================
     st.markdown("**Faltantes estimados por Supervisor**")
-    filas = []
-    for sup in sup_by_id.values():
-        if cedis_filtro and norm(sup.get("cedis","")) != norm(cedis_filtro):
-            continue
-        sup_cedis = sup.get("cedis","")
-        sup_seg   = sup.get("segmento")  # opcional
-        cat_sup = [u for u in catalog_fil if u["cedis"] == sup_cedis]
-        if sup_seg:
-            cat_sup = [u for u in cat_sup if u["segmento"] == sup_seg]
-        total_esp = len(cat_sup)
-        lavadas_sup = len([1 for r in regs_fil if r.get("supervisorId")==sup.get("id")])
-        faltantes   = max(total_esp - lavadas_sup, 0)
-        filas.append({
-            "Supervisor": sup.get("nombre", sup.get("id","")),
-            "Esperadas": total_esp,
-            "Lavadas": lavadas_sup,
-            "Faltantes": faltantes
-        })
-    df_falt = pd.DataFrame(filas)
-    if not df_falt.empty:
-        st.dataframe(df_falt.sort_values("Faltantes", descending=True), use_container_width=True)
-        st.bar_chart(data=df_falt.set_index("Supervisor")["Faltantes"], use_container_width=True)
-    else:
-        st.info("No hay datos suficientes para estimar faltantes por supervisor.")
+    try:
+        filas = []
+
+        # Catálogo filtrado por CEDIS para expectativa por supervisor
+        if df_cat.empty or "cedis" not in df_cat.columns or "segmento" not in df_cat.columns:
+            df_cat_filtrado = pd.DataFrame(columns=["id","cedis","segmento"])
+        else:
+            df_cat_filtrado = df_cat[["id","cedis","segmento"]].copy()
+
+        for sid, sup in sup_by_id.items():
+            if not isinstance(sup, dict):
+                continue
+            sup_cedis = sup.get("cedis", "")
+            sup_seg   = sup.get("segmento")  # opcional
+            sup_name  = sup.get("nombre", sid)
+
+            # Filtrar catálogo del supervisor
+            cat_sup = df_cat_filtrado[df_cat_filtrado["cedis"] == sup_cedis] if not df_cat_filtrado.empty else pd.DataFrame(columns=["id","cedis","segmento"])
+            if sup_seg and not cat_sup.empty:
+                cat_sup = cat_sup[cat_sup["segmento"] == sup_seg]
+
+            total_esp = cat_sup[["id","cedis"]].drop_duplicates().shape[0] if not cat_sup.empty else 0
+
+            # Lavadas por ese supervisor
+            if not df_reg.empty and "supervisorId" in df_reg.columns:
+                lavadas_sup = df_reg[df_reg["supervisorId"] == sid].shape[0]
+            else:
+                lavadas_sup = 0
+
+            faltantes = max(total_esp - lavadas_sup, 0)
+            filas.append({
+                "Supervisor": sup_name,
+                "Esperadas": int(total_esp),
+                "Lavadas": int(lavadas_sup),
+                "Faltantes": int(faltantes),
+            })
+
+        df_falt = pd.DataFrame(filas)
+        if not df_falt.empty:
+            df_falt = df_falt.sort_values("Faltantes", ascending=False)
+            st.dataframe(df_falt, use_container_width=True)
+            st.bar_chart(df_falt.set_index("Supervisor")["Faltantes"], use_container_width=True)
+        else:
+            st.info("No hay datos suficientes para estimar faltantes por supervisor.")
+    except Exception as e:
+        st.warning(f"No se pudo calcular faltantes por supervisor: {e}")
 
 # =============================== App ===============================
 
