@@ -1,6 +1,6 @@
 # app.py — Lavados Semanales (Streamlit)
 # --------------------------------------
-# - Login con roles (admin / supervisor) contra BD MySQL (Railway)
+# - Login con roles (admin / supervisor) contra BD MySQL (Railway) o SQLite local
 # - Supervisores capturan lavados con 4 fotos (frente, atrás, lado, cabina)
 # - Bloqueo de fotos repetidas por hash SHA-256 (global, consultando BD)
 # - Catálogos desde ./data/*.json
@@ -8,6 +8,7 @@
 # - Admin NO captura ni borra; solo ver/exportar/gestionar usuarios
 # - Reportes y gráficos (KPIs + barras por CEDIS / supervisor)
 # - Boot-guard: muestra errores en pantalla
+# - Optimización de imágenes (Pillow) para subir más rápido
 
 from __future__ import annotations
 
@@ -19,7 +20,10 @@ import pandas as pd
 import streamlit as st
 from PIL import Image, ImageOps
 
-# Capa de datos (asegúrate que db.py exista y exporte estas funciones)
+# ⚠️ Streamlit debe configurarse UNA sola vez y como primera llamada a st.*
+st.set_page_config(page_title="Lavado semanal", layout="wide")
+
+# Capa de datos
 from db import (
     init_db, healthcheck,
     upsert_user, get_user, list_users,
@@ -45,7 +49,7 @@ def inject_css():
       .app-header {
         display:flex; align-items:center; gap:14px;
         background:#fff; border:1px solid #eaeaea;
-        border-radius:16px; padding:12px 16px; 
+        border-radius:16px; padding:12px 16px;
         box-shadow:0 8px 20px rgba(0,0,0,.04);
         margin-bottom:12px;
       }
@@ -75,10 +79,10 @@ def inject_css():
 # ========================== Boot Guard ===========================
 
 def boot_guard(fn):
+    """Ejecuta la app atrapando cualquier excepción para mostrarla en pantalla."""
     try:
         fn()
     except Exception as e:
-        st.set_page_config(page_title="Error al iniciar", layout="wide")
         st.title("❌ La app falló al iniciar")
         st.error("Revisa el detalle del error y los logs del servidor.")
         st.exception(e)
@@ -456,20 +460,15 @@ def kpis_y_graficos(
             df_reg = df_reg[df_reg["cedis"] == cedis_filtro]
 
     # ================= KPIs =================
-    # Total unidades (por (id, cedis) únicos)
     if df_cat.empty or not set(["id","cedis"]).issubset(df_cat.columns):
         total_unidades = 0
     else:
         total_unidades = df_cat[["id","cedis"]].drop_duplicates().shape[0]
 
-    # Lavadas únicas en la semana (por (unidadId, cedis))
     if df_reg.empty or not set(["unidadId","cedis"]).issubset(df_reg.columns):
         total_lavadas = 0
-        lavadas_set = set()
     else:
-        df_lav_pairs = df_reg[["unidadId","cedis"]].dropna()
-        lavadas_set = set(map(tuple, df_lav_pairs.values.tolist()))
-        total_lavadas = len(lavadas_set)
+        total_lavadas = df_reg[["unidadId","cedis"]].drop_duplicates().shape[0]
 
     total_no_lav = max(total_unidades - total_lavadas, 0)
     pct = (total_lavadas / total_unidades * 100.0) if total_unidades else 0.0
@@ -500,10 +499,11 @@ def kpis_y_graficos(
     st.markdown("**Lavadas por Supervisor**")
     try:
         if not df_reg.empty:
-            # Supervisor puede venir vacío -> “(sin supervisor)”
+            sup_series = df_reg.get("supervisorNombre")
+            if sup_series is None:
+                sup_series = pd.Series(["(sin supervisor)"] * len(df_reg))
             df_sup = (
-                df_reg
-                .assign(Supervisor=df_reg.get("supervisorNombre", pd.Series(dtype=str)).fillna("(sin supervisor)"))
+                pd.DataFrame({"Supervisor": sup_series.fillna("(sin supervisor)")})
                 .groupby("Supervisor", dropna=False)
                 .size()
                 .reset_index(name="lavadas")
@@ -523,7 +523,6 @@ def kpis_y_graficos(
     try:
         filas = []
 
-        # Catálogo filtrado por CEDIS para expectativa por supervisor
         if df_cat.empty or "cedis" not in df_cat.columns or "segmento" not in df_cat.columns:
             df_cat_filtrado = pd.DataFrame(columns=["id","cedis","segmento"])
         else:
@@ -536,14 +535,12 @@ def kpis_y_graficos(
             sup_seg   = sup.get("segmento")  # opcional
             sup_name  = sup.get("nombre", sid)
 
-            # Filtrar catálogo del supervisor
             cat_sup = df_cat_filtrado[df_cat_filtrado["cedis"] == sup_cedis] if not df_cat_filtrado.empty else pd.DataFrame(columns=["id","cedis","segmento"])
             if sup_seg and not cat_sup.empty:
                 cat_sup = cat_sup[cat_sup["segmento"] == sup_seg]
 
             total_esp = cat_sup[["id","cedis"]].drop_duplicates().shape[0] if not cat_sup.empty else 0
 
-            # Lavadas por ese supervisor
             if not df_reg.empty and "supervisorId" in df_reg.columns:
                 lavadas_sup = df_reg[df_reg["supervisorId"] == sid].shape[0]
             else:
@@ -570,7 +567,6 @@ def kpis_y_graficos(
 # =============================== App ===============================
 
 def main():
-    st.set_page_config(page_title="Lavado semanal", layout="wide")
     ensure_dirs()
     inject_css()
 
@@ -903,7 +899,7 @@ def main():
         st.markdown("---")
         admin_user_manager(cedis_labels)
 
-    # -------- Reportes y gráficos globales (al final de main) --------
+    # -------- Reportes y gráficos globales --------
     st.markdown("---")
     st.header("Reportes y Gráficos")
     cedis_opc = ["(Todos)"] + sorted({u["cedis"] for u in CATALOGO})
