@@ -1,16 +1,17 @@
 # db.py — SQLAlchemy 2.x para MySQL (Railway) o SQLite local
-# Requisitos en requirements.txt:
+# Requisitos:
 # SQLAlchemy==2.0.43
-# PyMySQL==1.1.0   # para mysql+pymysql://
+# PyMySQL==1.1.0
 
-import os, json, datetime
-from typing import Any, Dict, List, Optional, Set
+import os, json, datetime, time
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import (
     create_engine, text, select, delete,
     String, DateTime, Text, UniqueConstraint
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.exc import OperationalError
 
 # ---------- URL de BD ----------
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -23,13 +24,32 @@ if not DATABASE_URL:
     os.makedirs("store", exist_ok=True)
     DATABASE_URL = "sqlite:///store/app.db"
 
+USE_SSL = os.getenv("DB_SSL", "0") == "1"
+
+def _engine_kwargs() -> dict:
+    kwargs = dict(
+        future=True,
+        pool_pre_ping=True,   # evita conexiones muertas
+        pool_recycle=280,     # recicla antes de que Railway corte (~5 min)
+        pool_size=5,
+        max_overflow=10,
+        pool_timeout=30,
+        connect_args={
+            "connect_timeout": 10,
+        },
+    )
+    # timeouts extra para PyMySQL (si existen)
+    if DATABASE_URL.startswith("mysql+pymysql://"):
+        kwargs["connect_args"].update({
+            "read_timeout": 30,
+            "write_timeout": 30,
+        })
+        if USE_SSL:
+            kwargs["connect_args"]["ssl"] = {}  # ajusta si tu instancia exige CA
+    return kwargs
+
 # ---------- Engine/Sesión ----------
-engine = create_engine(
-    DATABASE_URL,
-    future=True,
-    pool_pre_ping=True,
-    pool_recycle=300,
-)
+engine = create_engine(DATABASE_URL, **_engine_kwargs())
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
 # ---------- Base/Modelos ----------
@@ -65,10 +85,20 @@ class Lavado(Base):
     )
 
 # ---------- Bootstrap / Utils ----------
-def init_db() -> None:
-    Base.metadata.create_all(engine)
+def init_db(retries: int = 5, backoff_sec: int = 2) -> None:
+    """Crea tablas con reintentos por si la conexión está fría."""
+    attempt = 1
+    while True:
+        try:
+            Base.metadata.create_all(engine)
+            return
+        except OperationalError as e:
+            if attempt >= retries:
+                raise
+            time.sleep(backoff_sec * attempt)
+            attempt += 1
 
-def healthcheck():
+def healthcheck() -> Tuple[bool, str]:
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -133,6 +163,7 @@ def list_users() -> List[Dict[str, Any]]:
 # ---------- Lavados ----------
 def save_lavado(record: Dict[str, Any]) -> None:
     with SessionLocal() as s:
+        # evitar duplicado por (week, cedis, unidad)
         s.execute(delete(Lavado).where(
             Lavado.week == record["week"],
             Lavado.cedis == record["cedis"],
@@ -190,10 +221,11 @@ def photo_hashes_all() -> Set[str]:
         for js in rows:
             try:
                 for h in (json.loads(js or "{}") or {}).values():
-                    if h: hashes.add(h)
+                    if h:
+                        hashes.add(h)
             except Exception:
                 pass
         return hashes
 
-# Crear tablas
-init_db()
+# ⚠️ Importante: NO llames init_db() aquí.
+# Llama init_db() desde app.py dentro de main().
