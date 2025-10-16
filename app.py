@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 from PIL import Image, ImageOps
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=5*60*1000, key="keepalive")  # cada 5 min
 
 # ⚠️ Streamlit debe configurarse UNA sola vez y como primera llamada a st.*
 st.set_page_config(page_title="Lavado semanal", layout="wide")
