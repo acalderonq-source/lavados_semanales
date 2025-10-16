@@ -24,6 +24,15 @@ st_autorefresh(interval=5*60*1000, key="keepalive")  # cada 5 min
 
 # ⚠️ Streamlit debe configurarse UNA sola vez y como primera llamada a st.*
 st.set_page_config(page_title="Lavado semanal", layout="wide")
+def main():
+    st.set_page_config(page_title="Lavado semanal", layout="wide")
+
+    # 🔁 Keep-alive cada 5 minutos (evita “Connecting…” mientras la pestaña esté abierta)
+    st_autorefresh(interval=5*60*1000, key="keepalive")
+
+    ensure_dirs()
+    inject_css()
+    ...
 
 # Capa de datos
 from db import (

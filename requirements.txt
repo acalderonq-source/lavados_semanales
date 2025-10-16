@@ -7,3 +7,4 @@ Pillow==10.4.0
 requests==2.32.3
 # Si tu MySQL usa caching_sha2_password:
 # cryptography==43.0.1
+streamlit-autorefresh==1.0.1
