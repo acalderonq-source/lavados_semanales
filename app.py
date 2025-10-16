@@ -41,6 +41,7 @@ warnings.filterwarnings(
 LOGO_URL = "https://tse1.mm.bing.net/th/id/OIP.QBCt9-dF3e4xLmEw_WVPmQHaCW?rs=1&pid=ImgDetMain&o=7&rm=3"
 
 def inject_css():
+    
     st.markdown("""
     <style>
       .main { padding-top: 0.25rem; }
@@ -78,7 +79,20 @@ def inject_css():
 
 # ========================== Boot Guard ===========================
 
-def boot_guard(fn):
+def boot_guard(fn):# --- Compat helper para st.image en versiones viejas/nuevas ---
+    def show_image(col, img, **kwargs):
+        """Muestra imagen tolerando versiones de Streamlit con/without use_container_width."""
+        try:
+            # Streamlit >= 1.18 aprox.
+            return col.image(img, use_container_width=True, **kwargs)
+        except TypeError:
+            try:
+                # Streamlit viejas
+                return col.image(img, use_column_width=True, **kwargs)
+            except TypeError:
+                # Último recurso
+                return col.image(img, **kwargs)
+
     """Ejecuta la app atrapando cualquier excepción para mostrarla en pantalla."""
     try:
         fn()
@@ -753,7 +767,7 @@ def main():
             for i,(k,_) in enumerate(FOTO_SLOTS):
                 p = (r.get("fotos") or {}).get(k)
                 if p and os.path.exists(p):
-                    gcols[i].image(p, use_container_width=True)
+                    show_image(gcols[i], p)
                 else:
                     gcols[i].write("—")
             cols[5].write(r["ts"])
