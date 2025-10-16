@@ -19,22 +19,21 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 from PIL import Image, ImageOps
-from streamlit_autorefresh import st_autorefresh
-st_autorefresh(interval=5*60*1000, key="keepalive")  # cada 5 min
 
-# ⚠️ Streamlit debe configurarse UNA sola vez y como primera llamada a st.*
-st.set_page_config(page_title="Lavado semanal", layout="wide")
-def main():
+# ======================= Page config (UNA sola vez) =======================
+if "page_config_done" not in st.session_state:
     st.set_page_config(page_title="Lavado semanal", layout="wide")
+    st.session_state["page_config_done"] = True
 
-    # 🔁 Keep-alive cada 5 minutos (evita “Connecting…” mientras la pestaña esté abierta)
-    st_autorefresh(interval=5*60*1000, key="keepalive")
+# Keep-alive opcional: no rompe si no está instalado
+def keep_alive():
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=5 * 60 * 1000, key="keepalive")  # cada 5 min
+    except Exception:
+        pass
 
-    ensure_dirs()
-    inject_css()
-    ...
-
-# Capa de datos
+# ======================= Capa de datos (db.py) ============================
 from db import (
     init_db, healthcheck,
     upsert_user, get_user, list_users,
@@ -52,7 +51,6 @@ warnings.filterwarnings(
 LOGO_URL = "https://tse1.mm.bing.net/th/id/OIP.QBCt9-dF3e4xLmEw_WVPmQHaCW?rs=1&pid=ImgDetMain&o=7&rm=3"
 
 def inject_css():
-    
     st.markdown("""
     <style>
       .main { padding-top: 0.25rem; }
@@ -88,22 +86,22 @@ def inject_css():
     </style>
     """, unsafe_allow_html=True)
 
+# --- Compat helper para st.image en versiones viejas/nuevas ---
+def show_image(col, img, **kwargs):
+    """
+    Muestra imagen tolerando versiones de Streamlit con/without use_container_width.
+    """
+    try:
+        return col.image(img, use_container_width=True, **kwargs)
+    except TypeError:
+        try:
+            return col.image(img, use_column_width=True, **kwargs)
+        except TypeError:
+            return col.image(img, **kwargs)
+
 # ========================== Boot Guard ===========================
 
-def boot_guard(fn):# --- Compat helper para st.image en versiones viejas/nuevas ---
-    def show_image(col, img, **kwargs):
-        """Muestra imagen tolerando versiones de Streamlit con/without use_container_width."""
-        try:
-            # Streamlit >= 1.18 aprox.
-            return col.image(img, use_container_width=True, **kwargs)
-        except TypeError:
-            try:
-                # Streamlit viejas
-                return col.image(img, use_column_width=True, **kwargs)
-            except TypeError:
-                # Último recurso
-                return col.image(img, **kwargs)
-
+def boot_guard(fn):
     """Ejecuta la app atrapando cualquier excepción para mostrarla en pantalla."""
     try:
         fn()
@@ -592,6 +590,7 @@ def kpis_y_graficos(
 # =============================== App ===============================
 
 def main():
+    keep_alive()
     ensure_dirs()
     inject_css()
 
@@ -821,7 +820,7 @@ def main():
         with c1:
             admin_cedis = st.selectbox(
                 "CEDIS",
-                options=["all"] + [c["id"] for c in CONFIG["cedis"]],
+                options=["all"] + [c["id"] for c in CONFIG["cedis"] ],
                 format_func=lambda x: "Todos" if x=="all" else cedis_labels.get(x, x),
             )
         with c2:

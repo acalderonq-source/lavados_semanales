@@ -1,6 +1,6 @@
 [server]
-maxUploadSize = 25
-maxMessageSize = 50
+maxUploadSize = 50
+maxMessageSize = 100
 headless = true
 
 [browser]
