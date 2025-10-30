@@ -774,8 +774,8 @@ with st.form(f"form_registro_v{version}", clear_on_submit=False):
                     st.session_state["lavado_unidad_actual"] = unidad
 
     # 👉 mensaje fuera del form
-   if auth["role"] == "supervisor" and st.session_state.get("lavado_guardado_ok"):
-    st.success(
+        if auth["role"] == "supervisor" and st.session_state.get("lavado_guardado_ok"):
+            st.success(
         f"✅ Unidad {st.session_state.get('lavado_unidad_actual','')} "
         f"registrada exitosamente en {st.session_state.get('lavado_semana_actual','')}."
     )
