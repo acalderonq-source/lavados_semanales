@@ -808,22 +808,26 @@ def main():
 
 
     # -------- Formulario de captura (solo supervisor) --------
+        # -------- Formulario de captura (solo supervisor) --------
     st.subheader("Registrar lavado")
-    FOTO_SLOTS = [("frente","Frente"),("atras","Atrás"),("lado","Medio lado"),("cabina","Cabina")]
+    FOTO_SLOTS = [
+        ("frente", "Frente"),
+        ("atras", "Atrás"),
+        ("lado", "Medio lado"),
+        ("cabina", "Cabina"),
+    ]
 
     if auth["role"] != "supervisor":
         st.info(
             "El administrador no puede registrar ni modificar lavados. Solo consulta y exporta estadísticas.",
-            icon="🔒"
+            icon="🔒",
         )
     else:
-        # FORMULARIO
-        with st.form("form_registro", clear_on_submit=False):
-            # unidades visibles para este supervisor / cedis / segmento
+        # 👇 CAMBIAMOS el key: antes era "form_registro"
+        with st.form("form_registro_lavado", clear_on_submit=False):
             unidad_ids = [u["id"] for u in pool_cap]
             unidad = st.selectbox("Unidad", options=[""] + unidad_ids, index=0)
 
-            # 4 fotos
             cols = st.columns(4)
             uploads: Dict[str, Any] = {}
             for (key, label), c in zip(FOTO_SLOTS, cols):
@@ -831,52 +835,64 @@ def main():
                     uploads[key] = st.file_uploader(
                         f"Foto: {label}",
                         type=["jpg", "jpeg", "png", "webp"],
-                        key=f"u_{key}"
+                        key=f"u_{key}",
                     )
 
             submitted = st.form_submit_button("Guardar")
 
             if submitted:
-                # validaciones básicas
                 if not unidad:
                     st.warning("Elegí la unidad.", icon="⚠️")
                 elif any(uploads[k] is None for k, _ in FOTO_SLOTS):
                     st.warning("Subí las 4 fotos: Frente, Atrás, Medio lado y Cabina.", icon="⚠️")
                 else:
-                    # 1) evitar misma foto en 2 slots
+                    # 1. evitar misma foto en dos slots
                     hashes_local: Dict[str, str] = {}
                     dup_local = False
                     for k, _ in FOTO_SLOTS:
-                        b = uploads[k].getvalue() if hasattr(uploads[k], "getvalue") else uploads[k].read()
+                        b = (
+                            uploads[k].getvalue()
+                            if hasattr(uploads[k], "getvalue")
+                            else uploads[k].read()
+                        )
                         if hasattr(uploads[k], "seek"):
                             uploads[k].seek(0)
                         h = hashlib.sha256(b).hexdigest()
                         if h in hashes_local.values():
                             dup_local = True
                         hashes_local[k] = h
+
                     if dup_local:
-                        st.error("No podés subir la misma foto en dos posiciones distintas.", icon="🚫")
+                        st.error(
+                            "No podés subir la misma foto en dos posiciones distintas.",
+                            icon="🚫",
+                        )
                         st.stop()
 
-                    # 2) evitar foto que ya existe en la BD
-                    all_hashes = photo_hashes_all()  # set de hashes en BD
+                    # 2. evitar foto repetida en toda la BD
+                    all_hashes = photo_hashes_all()
                     repetidas = [k for k, h in hashes_local.items() if h in all_hashes]
                     if repetidas:
-                        st.error(f"Estas fotos ya se usaron antes: {', '.join(repetidas)}.", icon="🚫")
+                        st.error(
+                            f"Estas fotos ya se usaron antes: {', '.join(repetidas)}.",
+                            icon="🚫",
+                        )
                         st.stop()
 
-                    # 3) guardar
+                    # 3. guardar
                     with st.spinner("Guardando fotos y registrando…"):
-                        # guardar fotos optimizadas en disco
                         fotos_paths = {
                             k: save_photo(uploads[k], k, WEEK, CEDIS, unidad)
                             for k, _ in FOTO_SLOTS
                         }
 
-                        # buscar datos de la unidad en el catálogo
                         u = next(
-                            (x for x in CATALOGO if x["id"] == unidad and x["cedis"] == CEDIS),
-                            None
+                            (
+                                x
+                                for x in CATALOGO
+                                if x["id"] == unidad and x["cedis"] == CEDIS
+                            ),
+                            None,
                         )
 
                         record = {
@@ -884,7 +900,9 @@ def main():
                             "week": WEEK,
                             "cedis": CEDIS,
                             "supervisorId": SUP,
-                            "supervisorNombre": (sup_by_id.get(SUP) or {}).get("nombre", ""),
+                            "supervisorNombre": (sup_by_id.get(SUP) or {}).get(
+                                "nombre", ""
+                            ),
                             "unidadId": unidad,
                             "unidadLabel": unidad,
                             "segmento": (u or {}).get("segmento", ""),
@@ -894,28 +912,25 @@ def main():
                             "created_by": auth["username"],
                         }
 
-                        # guardar en BD
                         save_lavado(record)
 
-                    # 4) marcar en la sesión que todo salió bien
+                    # marcar éxito
                     st.session_state["lavado_guardado_ok"] = True
                     st.session_state["lavado_semana_actual"] = WEEK
                     st.session_state["lavado_unidad_actual"] = unidad
 
-    # 👉 mensaje fuera del form, para que no se pierda con el submit
+    # mensaje post-guardado
     if auth["role"] == "supervisor" and st.session_state.get("lavado_guardado_ok"):
         st.success(
-            f"✅ Unidad {st.session_state.get('lavado_unidad_actual', '')} "
-            f"registrada exitosamente en {st.session_state.get('lavado_semana_actual', '')}."
+            f"✅ Unidad {st.session_state.get('lavado_unidad_actual','')} "
+            f"registrada exitosamente en {st.session_state.get('lavado_semana_actual','')}."
         )
-
-        # botón para seguir metiendo unidades
         if st.button("➕ Agregar otra unidad"):
-            # limpiar estado y refrescar
             st.session_state.pop("lavado_guardado_ok", None)
             st.session_state.pop("lavado_unidad_actual", None)
             st.session_state.pop("lavado_semana_actual", None)
             st.rerun()
+
 
     # -------- Tabla de registros --------
     WEEK_CUR = iso_week_key(fecha_sel)
