@@ -753,10 +753,27 @@ def main():
                         }
 
                         # guardar en BD
+                       # guardar en BD
                         save_lavado(record)
 
-                    st.success("¡Guardado!")
-                    st.rerun()
+# marcar en la sesión que ya se guardó bien
+                    st.session_state["lavado_guardado_ok"] = True
+                    st.session_state["lavado_semana_actual"] = WEEK
+                    st.session_state["lavado_unidad_actual"] = unidad
+
+                    # mensaje post-guardado
+if st.session_state.get("lavado_guardado_ok"):
+    st.success(
+        f"✅ Unidad {st.session_state.get('lavado_unidad_actual','')} registrada exitosamente en {st.session_state.get('lavado_semana_actual','')}."
+    )
+    if st.button("➕ Agregar otra unidad"):
+        # limpiar el estado para que no salga el mensaje de nuevo
+        st.session_state.pop("lavado_guardado_ok", None)
+        st.session_state.pop("lavado_unidad_actual", None)
+        st.session_state.pop("lavado_semana_actual", None)
+        st.rerun()
+
+
 
     # -------- Tabla de registros --------
     WEEK_CUR = iso_week_key(fecha_sel)
