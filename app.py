@@ -88,9 +88,6 @@ def inject_css():
 
 # --- Compat helper para st.image en versiones viejas/nuevas ---
 def show_image(col, img, **kwargs):
-    """
-    Muestra imagen tolerando versiones de Streamlit con/without use_container_width.
-    """
     try:
         return col.image(img, use_container_width=True, **kwargs)
     except TypeError:
@@ -102,7 +99,6 @@ def show_image(col, img, **kwargs):
 # ========================== Boot Guard ===========================
 
 def boot_guard(fn):
-    """Ejecuta la app atrapando cualquier excepción para mostrarla en pantalla."""
     try:
         fn()
     except Exception as e:
@@ -114,7 +110,7 @@ def boot_guard(fn):
 
 # ========================= Utilidades base =======================
 
-BASE_DIR     = os.getenv("DATA_DIR", "store")   # raíz de datos (archivos)
+BASE_DIR     = os.getenv("DATA_DIR", "store")
 EVIDENCE_DIR = os.path.join(BASE_DIR, "evidence")
 WEEKS_DIR    = os.path.join(BASE_DIR, "semanas")
 
@@ -215,7 +211,6 @@ CONFIG: Dict[str, Any] = {
         {"id": "sup-lorem-salazar", "nombre": "Loren Salazar", "cedis": "Tecnicos"},
         {"id": "sup-ronny-garita", "nombre": "Ronny Garita", "cedis": "Transportadora"},
         {"id": "sup-miguel-gomez", "nombre": "Miguel Gomez", "cedis": "cartago",  "segmento": "hinos"},
-        # corregimos los duplicados de erick valerin
         {"id": "sup-erick-valerin-cartago","nombre": "Erick Valerin","cedis": "cartago",  "segmento": "graneles"},
         {"id": "sup-erick-valerin-alajuela","nombre": "Erick Valerin","cedis": "alajuela",  "segmento": "graneles"},
         {"id": "sup-enrique-herrera","nombre": "Enrique Herrera","cedis": "guapiles", "segmento": "graneles"},
@@ -378,7 +373,6 @@ def admin_user_manager(cedis_labels: Dict[str, str]):
 # ============================= Fotos / Export ===========================
 
 def save_photo(file, subname: str, week: str, cedis: str, unidad_id: str) -> Optional[str]:
-    """Optimiza a JPG 85% y máx. 1600px por lado para evitar subidas lentas."""
     if not file:
         return None
     base = os.path.join(EVIDENCE_DIR, week, safe_slug(cedis), safe_slug(str(unidad_id)))
@@ -386,7 +380,6 @@ def save_photo(file, subname: str, week: str, cedis: str, unidad_id: str) -> Opt
     name = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}_{subname}.jpg"
     path = os.path.join(base, name)
 
-    # Lee bytes y resetea el puntero por si luego se reusa
     raw = file.getvalue() if hasattr(file, "getvalue") else file.read()
     if hasattr(file, "seek"):
         file.seek(0)
@@ -452,7 +445,6 @@ def export_week_folders(week: str, catalog: List[Dict[str, Any]], registros_sema
         f.write(csv_bytes(rows))
 
 def delete_week_everywhere(week: str, registros_semana: List[Dict[str, Any]]):
-    # borra en BD todos los registros de esa semana + limpia carpetas locales
     for r in registros_semana:
         try:
             delete_lavado(r["id"])
@@ -473,18 +465,15 @@ def kpis_y_graficos(
 ):
     st.subheader("Reportes y Gráficos")
 
-    # DataFrames base (tolerantes a vacío)
     df_cat = pd.DataFrame(CATALOGO or [])
     df_reg = pd.DataFrame(reg_semana or [])
 
-    # Filtros por CEDIS (si aplica)
     if cedis_filtro:
         if not df_cat.empty and "cedis" in df_cat:
             df_cat = df_cat[df_cat["cedis"] == cedis_filtro]
         if not df_reg.empty and "cedis" in df_reg:
             df_reg = df_reg[df_reg["cedis"] == cedis_filtro]
 
-    # ================= KPIs =================
     if df_cat.empty or not set(["id","cedis"]).issubset(df_cat.columns):
         total_unidades = 0
     else:
@@ -504,7 +493,6 @@ def kpis_y_graficos(
     c3.metric("No lavadas", total_no_lav)
     c4.metric("Cumplimiento (%)", f"{pct:.1f}%")
 
-    # ================= Barras por CEDIS =================
     st.markdown("**Lavadas por CEDIS**")
     try:
         if not df_reg.empty and "cedis" in df_reg.columns:
@@ -520,7 +508,6 @@ def kpis_y_graficos(
     except Exception as e:
         st.warning(f"No se pudo generar el gráfico por CEDIS: {e}")
 
-    # ================= Barras por Supervisor =================
     st.markdown("**Lavadas por Supervisor**")
     try:
         if not df_reg.empty:
@@ -543,7 +530,6 @@ def kpis_y_graficos(
     except Exception as e:
         st.warning(f"No se pudo generar el gráfico por Supervisor: {e}")
 
-    # ================= Faltantes por Supervisor (estimación) =================
     st.markdown("**Faltantes estimados por Supervisor**")
     try:
         filas = []
@@ -557,7 +543,7 @@ def kpis_y_graficos(
             if not isinstance(sup, dict):
                 continue
             sup_cedis = sup.get("cedis", "")
-            sup_seg   = sup.get("segmento")  # opcional
+            sup_seg   = sup.get("segmento")
             sup_name  = sup.get("nombre", sid)
 
             cat_sup = df_cat_filtrado[df_cat_filtrado["cedis"] == sup_cedis] if not df_cat_filtrado.empty else pd.DataFrame(columns=["id","cedis","segmento"])
@@ -596,8 +582,10 @@ def main():
     ensure_dirs()
     inject_css()
 
+    # contador para resetear form
     if "form_registro_version" not in st.session_state:
         st.session_state["form_registro_version"] = 0
+
     # Conectar BD
     init_db()
     ok, msg = healthcheck()
@@ -622,12 +610,11 @@ def main():
         unsafe_allow_html=True,
     )
 
-    auth = require_login()      # obliga login
+    auth = require_login()
     CATALOGO = load_catalog()
     cedis_labels = {c["id"]: c["nombre"] for c in CONFIG["cedis"]}
     sup_by_id = {s["id"]: s for s in CONFIG["supervisores"]}
 
-    # Barra superior (usuario)
     colH1, colH2 = st.columns([6,1])
     with colH1:
         st.caption(f"Usuario: **{auth['name']}** · Rol: **{auth['role']}**")
@@ -636,7 +623,6 @@ def main():
             st.session_state.pop("auth", None)
             st.rerun()
 
-    # -------- Filtros superiores --------
     cont = st.container()
     with cont:
         cA, cB, cC, cD = st.columns([1.1, 1.5, 1.6, 1.8])
@@ -696,25 +682,24 @@ def main():
     else:
         version = st.session_state["form_registro_version"]
 
-with st.form(f"form_registro_v{version}", clear_on_submit=False):
-    unidad_ids = [u["id"] for u in pool_cap]
-    unidad = st.selectbox(
-        "Unidad",
-        options=[""] + unidad_ids,
-        index=0,
-        key=f"unidad_select_v{version}",    # 👈 también la placa
-    )
-
-    cols = st.columns(4)
-    uploads: Dict[str, Any] = {}
-    for (key, label), c in zip(FOTO_SLOTS, cols):
-        with c:
-            uploads[key] = st.file_uploader(
-                f"Foto: {label}",
-                type=["jpg", "jpeg", "png", "webp"],
-                key=f"u_{key}_v{version}",    # 👈 clave única por versión
+        with st.form(f"form_registro_v{version}", clear_on_submit=False):
+            unidad_ids = [u["id"] for u in pool_cap]
+            unidad = st.selectbox(
+                "Unidad",
+                options=[""] + unidad_ids,
+                index=0,
+                key=f"unidad_select_v{version}",
             )
 
+            cols = st.columns(4)
+            uploads: Dict[str, Any] = {}
+            for (key, label), c in zip(FOTO_SLOTS, cols):
+                with c:
+                    uploads[key] = st.file_uploader(
+                        f"Foto: {label}",
+                        type=["jpg","jpeg","png","webp"],
+                        key=f"u_{key}_v{version}",
+                    )
 
             submitted = st.form_submit_button("Guardar")
             if submitted:
@@ -723,7 +708,6 @@ with st.form(f"form_registro_v{version}", clear_on_submit=False):
                 elif any(uploads[k] is None for k, _ in FOTO_SLOTS):
                     st.warning("Subí las 4 fotos: Frente, Atrás, Medio lado y Cabina.", icon="⚠️")
                 else:
-                    # hashes locales (evitar misma foto en 2 slots)
                     hashes_local: Dict[str, str] = {}
                     dup_local = False
                     for k,_ in FOTO_SLOTS:
@@ -738,15 +722,13 @@ with st.form(f"form_registro_v{version}", clear_on_submit=False):
                         st.error("No podés subir la misma foto en dos posiciones distintas.", icon="🚫")
                         st.stop()
 
-                    # duplicados globales (en BD)
-                    all_hashes = photo_hashes_all()  # set de hashes en BD
+                    all_hashes = photo_hashes_all()
                     repetidas = [k for k,h in hashes_local.items() if h in all_hashes]
                     if repetidas:
                         st.error(f"Estas fotos ya se usaron antes: {', '.join(repetidas)}.", icon="🚫")
                         st.stop()
 
                     with st.spinner("Guardando fotos y registrando..."):
-                        # guardar fotos en disco (optimizadas)
                         fotos_paths = {k: save_photo(uploads[k], k, WEEK, CEDIS, unidad) for k,_ in FOTO_SLOTS}
 
                         u = next((x for x in CATALOGO if x["id"] == unidad and x["cedis"] == CEDIS), None)
@@ -764,35 +746,30 @@ with st.form(f"form_registro_v{version}", clear_on_submit=False):
                             "ts": datetime.now().isoformat(timespec="seconds"),
                             "created_by": auth["username"],
                         }
-
-                        # guardar en BD
                         save_lavado(record)
 
-                    # 🚩 MARCAMOS ÉXITO
                     st.session_state["lavado_guardado_ok"] = True
                     st.session_state["lavado_semana_actual"] = WEEK
                     st.session_state["lavado_unidad_actual"] = unidad
 
-    # 👉 mensaje fuera del form
-        if auth["role"] == "supervisor" and st.session_state.get("lavado_guardado_ok"):
-            st.success(
-        f"✅ Unidad {st.session_state.get('lavado_unidad_actual','')} "
-        f"registrada exitosamente en {st.session_state.get('lavado_semana_actual','')}."
-    )
-    if st.button("➕ Agregar otra unidad"):
-        # limpiar flags
-        st.session_state.pop("lavado_guardado_ok", None)
-        st.session_state.pop("lavado_unidad_actual", None)
-        st.session_state.pop("lavado_semana_actual", None)
-        # 👇 forzar formulario nuevo
-        st.session_state["form_registro_version"] += 1
-        st.rerun()
-
+    # mensaje fuera del form
+    if auth["role"] == "supervisor" and st.session_state.get("lavado_guardado_ok"):
+        st.success(
+            f"✅ Unidad {st.session_state.get('lavado_unidad_actual','')} "
+            f"registrada exitosamente en {st.session_state.get('lavado_semana_actual','')}."
+        )
+        if st.button("➕ Agregar otra unidad"):
+            st.session_state.pop("lavado_guardado_ok", None)
+            st.session_state.pop("lavado_unidad_actual", None)
+            st.session_state.pop("lavado_semana_actual", None)
+            # 👇 forzar que el form se cree con keys nuevas = limpio
+            st.session_state["form_registro_version"] += 1
+            st.rerun()
 
     # -------- Tabla de registros --------
     WEEK_CUR = iso_week_key(fecha_sel)
     st.subheader(f"Registros — {WEEK_CUR}")
-    reg_semana = get_lavados_week(WEEK_CUR)  # BD
+    reg_semana = get_lavados_week(WEEK_CUR)
     if auth["role"] == "supervisor":
         reg_semana = [r for r in reg_semana if r["supervisorId"] == auth.get("supervisorId")]
 
@@ -815,7 +792,7 @@ with st.form(f"form_registro_v{version}", clear_on_submit=False):
             cols[5].write(r["ts"])
             can_delete = auth["role"] == "supervisor" and r["supervisorId"] == auth.get("supervisorId")
             if can_delete and cols[6].button("Eliminar", key=r["id"]):
-                delete_lavado(r["id"])  # BD
+                delete_lavado(r["id"])
                 st.rerun()
             if not can_delete:
                 cols[6].write("—")
@@ -872,7 +849,6 @@ with st.form(f"form_registro_v{version}", clear_on_submit=False):
         with c4:
             admin_q = st.text_input("Buscar (unidad o supervisor)")
 
-        # Filtros sobre catálogo y registros
         pool = CATALOGO[:]
         if admin_cedis!="all": pool = [u for u in pool if u["cedis"] == admin_cedis]
         if admin_seg!="all":   pool = [u for u in pool if u["segmento"] == admin_seg]
@@ -883,7 +859,7 @@ with st.form(f"form_registro_v{version}", clear_on_submit=False):
             q = norm(admin_q)
             pool = [u for u in pool if q in norm(u["id"]) or q in norm(cedis_labels.get(u["cedis"], u["cedis"]))]
 
-        lav = get_lavados_week(WEEK_CUR)  # BD
+        lav = get_lavados_week(WEEK_CUR)
         if admin_cedis!="all": lav = [r for r in lav if r["cedis"] == admin_cedis]
         if admin_seg!="all":   lav = [r for r in lav if r["segmento"] == admin_seg]
         if admin_sup!="all":   lav = [r for r in lav if r["supervisorId"] == admin_sup]
@@ -893,7 +869,6 @@ with st.form(f"form_registro_v{version}", clear_on_submit=False):
 
         nolav = [u for u in pool if (u["id"], u["cedis"]) not in {(r["unidadId"], r["cedis"]) for r in lav}]
 
-        # XLSX
         xlsx_data = xlsx_week_bytes(WEEK_CUR, lav, nolav)
         st.download_button(
             "Descargar XLSX (lavadas / no lavadas)",
@@ -939,7 +914,6 @@ with st.form(f"form_registro_v{version}", clear_on_submit=False):
             st.download_button("Exportar NO LAVADAS (CSV)", data=csv_nolav, file_name=f"no-lavadas-{WEEK_CUR}.csv", mime="text/csv")
 
         st.markdown("---")
-        # Export a carpetas + eliminar semana
         cX, cY = st.columns([1,1])
         with cX:
             if st.button("Generar carpetas de la semana (lavados / no_lavados)"):
@@ -955,7 +929,6 @@ with st.form(f"form_registro_v{version}", clear_on_submit=False):
         st.markdown("---")
         admin_user_manager(cedis_labels)
 
-    # -------- Reportes y gráficos globales --------
     st.markdown("---")
     st.header("Reportes y Gráficos")
     cedis_opc = ["(Todos)"] + sorted({u["cedis"] for u in CATALOGO})
