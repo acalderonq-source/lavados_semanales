@@ -596,6 +596,8 @@ def main():
     ensure_dirs()
     inject_css()
 
+    if "form_registro_version" not in st.session_state:
+        st.session_state["form_registro_version"] = 0
     # Conectar BD
     init_db()
     ok, msg = healthcheck()
@@ -692,18 +694,27 @@ def main():
     if auth["role"] != "supervisor":
         st.info("El administrador no puede registrar ni modificar lavados. Solo consulta y exporta estadísticas.", icon="🔒")
     else:
-        with st.form("form_registro", clear_on_submit=False):
-            unidad_ids = [u["id"] for u in pool_cap]
-            unidad = st.selectbox("Unidad", options=[""] + unidad_ids, index=0)
+        version = st.session_state["form_registro_version"]
 
-            cols = st.columns(4)
-            uploads: Dict[str, Any] = {}
-            for (key, label), c in zip(FOTO_SLOTS, cols):
-                with c:
-                    # usamos los mismos keys de siempre
-                    uploads[key] = st.file_uploader(
-                        f"Foto: {label}", type=["jpg","jpeg","png","webp"], key=f"u_{key}"
-                    )
+with st.form(f"form_registro_v{version}", clear_on_submit=False):
+    unidad_ids = [u["id"] for u in pool_cap]
+    unidad = st.selectbox(
+        "Unidad",
+        options=[""] + unidad_ids,
+        index=0,
+        key=f"unidad_select_v{version}",    # 👈 también la placa
+    )
+
+    cols = st.columns(4)
+    uploads: Dict[str, Any] = {}
+    for (key, label), c in zip(FOTO_SLOTS, cols):
+        with c:
+            uploads[key] = st.file_uploader(
+                f"Foto: {label}",
+                type=["jpg", "jpeg", "png", "webp"],
+                key=f"u_{key}_v{version}",    # 👈 clave única por versión
+            )
+
 
             submitted = st.form_submit_button("Guardar")
             if submitted:
@@ -763,16 +774,20 @@ def main():
                     st.session_state["lavado_unidad_actual"] = unidad
 
     # 👉 mensaje fuera del form
-    if auth["role"] == "supervisor" and st.session_state.get("lavado_guardado_ok"):
-        st.success(
-            f"✅ Unidad {st.session_state.get('lavado_unidad_actual','')} "
-            f"registrada exitosamente en {st.session_state.get('lavado_semana_actual','')}."
-        )
-        if st.button("➕ Agregar otra unidad"):
-            st.session_state.pop("lavado_guardado_ok", None)
-            st.session_state.pop("lavado_unidad_actual", None)
-            st.session_state.pop("lavado_semana_actual", None)
-            st.rerun()
+   if auth["role"] == "supervisor" and st.session_state.get("lavado_guardado_ok"):
+    st.success(
+        f"✅ Unidad {st.session_state.get('lavado_unidad_actual','')} "
+        f"registrada exitosamente en {st.session_state.get('lavado_semana_actual','')}."
+    )
+    if st.button("➕ Agregar otra unidad"):
+        # limpiar flags
+        st.session_state.pop("lavado_guardado_ok", None)
+        st.session_state.pop("lavado_unidad_actual", None)
+        st.session_state.pop("lavado_semana_actual", None)
+        # 👇 forzar formulario nuevo
+        st.session_state["form_registro_version"] += 1
+        st.rerun()
+
 
     # -------- Tabla de registros --------
     WEEK_CUR = iso_week_key(fecha_sel)
