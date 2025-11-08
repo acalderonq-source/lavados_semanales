@@ -26,5 +26,17 @@
 
   { "placa": "C157015", "cedis": "Alajuela", "negocio": "HINOS" },
   { "placa": "C172455", "cedis": "Alajuela", "negocio": "HINOS" },
-  { "placa": "C173515", "cedis": "Alajuela", "negocio": "HINOS" }
+  { "placa": "C173515", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "170416",  "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "170751",  "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "C181757", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "C153382", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "C164213", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "C165059", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "C181760", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "164215",  "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "C165061", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "C165061", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "170711",  "cedis": "Alajuela", "negocio": "GRANEL" }
 ]
+
