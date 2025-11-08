@@ -246,7 +246,6 @@ def segment_from_negocio(neg: str) -> Tuple[str, str]:
 # ======================== Catálogos (data/*.json) ====================
 
 SOURCES: List[str] = [
-    "data/unidades-hinos-cartago.json",
     "data/unidades-la-cruz.json",
     "data/unidades-alajuela.json",
     "data/unidades-todo.json",
