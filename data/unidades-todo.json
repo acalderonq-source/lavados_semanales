@@ -23,7 +23,6 @@
   { "placa": "C178661", "cedis": "Rio Claro", "negocio": "HINOS" },
   { "placa": "C167066", "cedis": "Rio Claro", "negocio": "HINOS" },
   { "placa": "C170279", "cedis": "Rio Claro", "negocio": "HINOS" },
-  { "placa": "C155869", "cedis": "Rio Claro", "negocio": "HINOS" },
   { "placa": "C178650", "cedis": "Rio Claro", "negocio": "HINOS" },
 
   { "placa": "178771",  "cedis": "Nicoya", "negocio": "HINOS" },
@@ -93,5 +92,6 @@
   { "placa": "C176255",  "cedis": "Cartago", "negocio": "HINOS" },
   { "placa": "C164415",  "cedis": "Cartago", "negocio": "HINOS" },
   { "placa": "C178795",  "cedis": "Cartago", "negocio": "HINOS" },
-  { "placa": "C170135",  "cedis": "Cartago", "negocio": "HINOS" }
+  { "placa": "C170135",  "cedis": "Cartago", "negocio": "HINOS" },
+   { "placa": "C155869",  "cedis": "Cartago", "negocio": "HINOS" }
 ]
