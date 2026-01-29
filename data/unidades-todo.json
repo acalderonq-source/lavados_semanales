@@ -26,6 +26,13 @@
   { "placa": "C178650", "cedis": "Perez Zeledon", "negocio": "HINOS" },
   { "placa": "C178659", "cedis": "Perez Zeledon", "negocio": "HINOS" },
 
+  { "placa": "C170126", "cedis": "Rio Claro", "negocio": "HINOS" },
+  { "placa": "C178661", "cedis": "Rio Claro", "negocio": "HINOS" },
+  { "placa": "C167066", "cedis": "Rio Claro", "negocio": "HINOS" },
+  { "placa": "C170279", "cedis": "Rio Claro", "negocio": "HINOS" },
+  { "placa": "C178650", "cedis": "Rio Claro", "negocio": "HINOS" },
+  { "placa": "C178659", "cedis": "Rio Claro", "negocio": "HINOS" },
+
   { "placa": "178771",  "cedis": "Nicoya", "negocio": "HINOS" },
   { "placa": "178772",  "cedis": "Nicoya", "negocio": "HINOS" },
   { "placa": "276982",  "cedis": "Nicoya", "negocio": "HINOS" },

@@ -222,7 +222,7 @@ CONFIG: Dict[str, Any] = {
         {"id": "sup-cristian-bolanos","nombre":"Cristian Bolaños","cedis":"alajuela","segmento":"graneles"},
         {"id": "sup-roberto-vargas",  "nombre":"Roberto Vargas",  "cedis":"alajuela","segmento":"hinos"},
         {"id": "sup-cristofer-carranza","nombre":"Cristofer Carranza","cedis":"San Carlos"},
-        {"id": "sup-victor-cordero", "nombre":"Victor Cordero", "cedis": "Rio Claro"},
+        {"id": "sup-esteban-herrera", "nombre":"Esteban Herrera", "cedis": "Rio Claro"},
         {"id": "sup-luis-rivas",     "nombre":"Luis Rivas",     "cedis": "Nicoya"},
     ],
     "asignaciones": [
