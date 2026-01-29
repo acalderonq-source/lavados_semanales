@@ -191,8 +191,8 @@ def xlsx_week_bytes(week: str, lav: List[Dict[str, Any]], nolav: List[Dict[str, 
 
 CONFIG: Dict[str, Any] = {
     "segmentos": [
-        {"id": "hinos", "nombre": "Hinos"},
-        {"id": "graneles", "nombre": "Graneles"},
+        {"id": "HINOS", "nombre": "Hinos"},
+        {"id": "GRANEL", "nombre": "Graneles"},
         {"id": "otros", "nombre": "Otros"},
     ],
     "cedis": [
