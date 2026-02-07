@@ -24,14 +24,13 @@
   { "placa": "C167066", "cedis": "Perez Zeledon", "negocio": "HINOS" },
   { "placa": "C170279", "cedis": "Perez Zeledon", "negocio": "HINOS" },
   { "placa": "C178650", "cedis": "Perez Zeledon", "negocio": "HINOS" },
-  { "placa": "C178659", "cedis": "Perez Zeledon", "negocio": "HINOS" },
 
   { "placa": "C170126", "cedis": "Rio Claro", "negocio": "HINOS" },
   { "placa": "C178661", "cedis": "Rio Claro", "negocio": "HINOS" },
   { "placa": "C167066", "cedis": "Rio Claro", "negocio": "HINOS" },
   { "placa": "C170279", "cedis": "Rio Claro", "negocio": "HINOS" },
   { "placa": "C178650", "cedis": "Rio Claro", "negocio": "HINOS" },
-  { "placa": "C178659", "cedis": "Rio Claro", "negocio": "HINOS" },
+  
 
   { "placa": "178771",  "cedis": "Nicoya", "negocio": "HINOS" },
   { "placa": "178772",  "cedis": "Nicoya", "negocio": "HINOS" },
@@ -57,7 +56,8 @@
   { "placa": "172460",  "cedis": "Perez Zeledon", "negocio": "HINOS" },
   { "placa": "171381",  "cedis": "Perez Zeledon", "negocio": "GRANEL" },
 
-
+{ "placa": "C178659", "cedis": "Cartago", "negocio": "HINOS" },
+ { "placa": "179925",  "cedis": "Cartago", "negocio": "GRANEL" },
   { "placa": "170416",   "cedis": "Cartago", "negocio": "GRANEL" },
   { "placa": "170751",   "cedis": "Cartago", "negocio": "GRANEL" },
   { "placa": "C181757",  "cedis": "Cartago", "negocio": "GRANEL" },
