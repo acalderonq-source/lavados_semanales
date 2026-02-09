@@ -56,8 +56,7 @@
   { "placa": "172460",  "cedis": "Perez Zeledon", "negocio": "HINOS" },
   { "placa": "171381",  "cedis": "Perez Zeledon", "negocio": "GRANEL" },
 
-{ "placa": "C178659", "cedis": "Cartago", "negocio": "HINOS" },
- { "placa": "179925",  "cedis": "Cartago", "negocio": "GRANEL" },
+  { "placa": "C178659", "cedis": "Cartago", "negocio": "HINOS" },
   { "placa": "170416",   "cedis": "Cartago", "negocio": "GRANEL" },
   { "placa": "170751",   "cedis": "Cartago", "negocio": "GRANEL" },
   { "placa": "C181757",  "cedis": "Cartago", "negocio": "GRANEL" },
