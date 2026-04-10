@@ -206,6 +206,7 @@ CONFIG: Dict[str, Any] = {
         {"id": "Perez Zeledon", "nombre": "Perez Zeledon"},
         {"id": "Nicoya", "nombre": "Nicoya"},
         {"id": "La Cruz", "nombre": "La Cruz"},
+        {"id": "Limon", "nombre": "Limon"},
     ],
     "supervisores": [
         {"id": "sup-lorem-salazar", "nombre": "Loren Salazar", "cedis": "Tecnicos"},
@@ -224,6 +225,7 @@ CONFIG: Dict[str, Any] = {
         {"id": "sup-cristofer-carranza","nombre":"Cristofer Carranza","cedis":"San Carlos"},
         {"id": "sup-esteban-herrera", "nombre":"Esteban Herrera", "cedis": "Rio Claro"},
         {"id": "sup-luis-rivas",     "nombre":"Luis Rivas",     "cedis": "Nicoya"},
+        {"id": "sup-william-masis", "nombre": "William Masis", "cedis": "Transportadora"},
     ],
     "asignaciones": [
         # ejemplo: {"supervisorId": "sup-miguel-gomez", "unidadId": "C170135"},
@@ -252,6 +254,7 @@ SOURCES: List[str] = [
     "data/unidades-transportadora.json",
     "data/unidades-tecnicos.json",
     "data/unidades-granel-cartago.json",
+    "data/unidades-recope.json",
 ]
 
 def load_catalog() -> List[Dict[str, Any]]:
